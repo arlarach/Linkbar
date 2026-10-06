@@ -67,3 +67,7 @@ __recovery/
 
 # Linkbar profile
 *.lbr
+
+# Build output and generated resources
+out/
+*.res
