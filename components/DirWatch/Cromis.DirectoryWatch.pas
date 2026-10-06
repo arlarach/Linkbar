@@ -430,13 +430,13 @@ procedure TDirectoryWatch.DeallocateHWnd(Wnd: HWND);
 var
   Instance: Pointer;
 begin
-  Instance := Pointer(GetWindowLong(Wnd, GWL_WNDPROC));
+  Instance := Pointer(GetWindowLongPtr(Wnd, GWLP_WNDPROC)); // *Ptr: 64-bit safe
 
   if Instance <> @DefWindowProc then
   begin
     { make sure we restore the default
       windows procedure before freeing memory }
-    SetWindowLong(Wnd, GWL_WNDPROC, Longint(@DefWindowProc));
+    SetWindowLongPtr(Wnd, GWLP_WNDPROC, LONG_PTR(@DefWindowProc));
     FreeObjectInstance(Instance);
   end;
 
