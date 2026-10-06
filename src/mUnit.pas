@@ -87,6 +87,11 @@ type
     FGripSize: Integer;
     FTooltipShow: Boolean;
     FModernStyle: Boolean;
+    FExtDragIcon: HBITMAP;
+    FShowSysWidgets: Boolean;
+    FCpuLoad, FRamLoad: Integer;       // 0..100
+    FPrevIdle, FPrevKernel, FPrevUser: UInt64;
+    FExtDragIconSize: Integer;
     FHotkeyInfo: THotkeyInfo;
     FItemMargin: TSize;
     FIconSize: Integer;
@@ -138,6 +143,14 @@ type
     procedure SetTransparencyMode(AValue: TTransparencyMode);
     procedure SetLook(AValue: TLook);
     procedure SetModernStyle(AValue: Boolean);
+    procedure SetShowSysWidgets(AValue: Boolean);
+    function SysWidgetLength(const AVertical: Boolean): Integer;
+    function SysWidgetRect(const AWidth, AHeight: Integer): TRect;
+    procedure SampleSysStats;
+    procedure DrawSysWidgets(const ABitmap: THBitmap; const AWidth, AHeight: Integer);
+    procedure RefreshSysWidgets;
+    procedure UpdateRunningState;
+    procedure DrawRunningMark(const ABitmap: THBitmap; const AItem: TItemBase; const ARect: TRect);
     procedure SetUseBkgndColor(AValue: Boolean);
     function GetAlign: TPanelAlign;
     procedure DrawBackground(const ABitmap: THBitmap; const AClipRect: TRect);
@@ -176,6 +189,7 @@ type
     procedure DoClickItem(X, Y: Integer);
     procedure DoExecuteItem(const AIndex: Integer);
     procedure ShowGroup(const AIndex: Integer);
+    procedure DragExternalFile(const AFileName: string; AIcon: HBITMAP; AIconSize: Integer);
     procedure RenameGroup(const AIndex: Integer);
     procedure DoRenameItem(const AIndex: Integer);
     procedure DoDelete(const AIndex: Integer);
@@ -238,6 +252,7 @@ type
     property GlowSize: Integer read FGlowSize write FGlowSize;
     property TooltipShow: Boolean read FTooltipShow write FTooltipShow;
     property ModernStyle: Boolean read FModernStyle write SetModernStyle;
+    property ShowSysWidgets: Boolean read FShowSysWidgets write SetShowSysWidgets;
     property HotIndex: Integer read FHotIndex write SetHotIndex;
     property HotkeyInfo: THotkeyInfo read FHotkeyInfo write SetHotkeyInfo;
     property IconSize: Integer read FIconSize write SetIconSize;
@@ -277,7 +292,7 @@ implementation
 {$R *.dfm}
 
 uses
-  Types, Math, Dialogs, StrUtils, Themes,
+  Types, Math, Dialogs, StrUtils, Themes, System.Generics.Collections,
   Winapi.ShellAPI,
   ExplorerMenu, Linkbar.Shell, Linkbar.Theme,
   Linkbar.OS, Linkbar.L10n, JumpLists.Form, JumpLists.Api_2, RenameDialog,
@@ -290,6 +305,8 @@ const
   LM_SHELLNOTIFY = WM_USER + 88;
   TIMER_AUTO_SHOW = 15;
   TIMER_AUTO_HIDE = 16;
+  TIMER_SYS_WIDGETS = 17;
+  TIMER_RUNNING = 18;
 
 function EnumWindowProcStopDirWatch(wnd: HWND; lParam: LPARAM): BOOL; stdcall;
 var
@@ -619,6 +636,10 @@ begin
   // Draw icon
   var d: Integer := IfThen(APressed, 1, 0);
   Items.Draw(ABitmap.Dc, item, r.Left + FIconOffset.X + d, r.Top + FIconOffset.Y + d);
+
+  // "Program is open" indicator
+  if not ADrawForDrag
+  then DrawRunningMark(ABitmap, item, r);
 end;
 
 procedure TLinkbarWcl.DrawItems(const AWidth, AHeight: integer);
@@ -626,6 +647,7 @@ begin
   Items.Sizes.Button := ButtonSize;
   Items.Sizes.Separator := SeparatorWidth;
   Items.Sizes.Margin := FGripSize;
+  Items.Sizes.Reserved := SysWidgetLength(IsVertical(Align));
   Items.UpdateLines(IsVertical(Align), AWidth, AHeight);
 
   // Draw captions
@@ -641,6 +663,7 @@ begin
     end
     else begin
       Items.Draw(BitmapPanel.Dc, item, item.Rect.Left + FIconOffset.X, item.Rect.Top + FIconOffset.Y);
+      DrawRunningMark(BitmapPanel, item, item.Rect);
     end;
   end;
 end;
@@ -653,6 +676,8 @@ begin
   DrawBackground(BitmapPanel, Rect(0, 0, AWidth, AHeight));
   // Draw items
   DrawItems(AWidth, AHeight);
+  // CPU/RAM widgets
+  DrawSysWidgets(BitmapPanel, AWidth, AHeight);
 end;
 
 procedure TLinkbarWcl.RecreateButtonBitmap(const AWidth, AHeight: integer);
@@ -822,6 +847,7 @@ begin
   FGlowSize             := settings.Read(INI_GLOWSIZE, DEF_GLOWSIZE, GLOW_SIZE_MIN, GLOW_SIZE_MAX);
   FTooltipShow          := settings.Read(INI_TOOLTIP_SHOW, DEF_TOOLTIP_SHOW);
   FModernStyle          := settings.Read(INI_MODERN_STYLE, DEF_MODERN_STYLE);
+  FShowSysWidgets       := settings.Read(INI_SYS_WIDGETS, DEF_SYS_WIDGETS);
   hki                   := settings.Read(INI_AUTOHIDE_HOTKEY, DEF_AUTOHIDE_HOTKEY);
   FIconSize             := settings.Read(INI_ICON_SIZE, DEF_ICON_SIZE, ICON_SIZE_MIN, ICON_SIZE_MAX);
   FIsLightStyle         := settings.Read(INI_ISLIGHT, DEF_ISLIGHT);
@@ -866,6 +892,16 @@ begin
   GlobalLook := FLook;
   GlobalAeroGlassEnabled := FEnableAeroGlass;
   GlobalModernStyle := FModernStyle;
+
+  // CPU/RAM widgets
+  if FShowSysWidgets
+  then begin
+    SampleSysStats;
+    SetTimer(Handle, TIMER_SYS_WIDGETS, 1000, nil);
+  end;
+
+  // "Program is open" indicator
+  SetTimer(Handle, TIMER_RUNNING, 2000, nil);
 
   // Register Hotkey
   HotkeyInfo := hki;
@@ -933,6 +969,7 @@ begin
     settings.Write(INI_SEPARATOR_STYLE, Integer(FSeparatorStyle));
     settings.Write(INI_TOOLTIP_SHOW, FTooltipShow);
     settings.Write(INI_MODERN_STYLE, FModernStyle);
+    settings.Write(INI_SYS_WIDGETS, FShowSysWidgets);
     // Save
     settings.Close;
   end;
@@ -1348,6 +1385,13 @@ begin
           FDragingItem := False;
           FDragIndex := ITEM_NONE;
         end
+        else if (PressedIndex = ITEM_NONE)
+             and FShowSysWidgets
+             and PtInRect(SysWidgetRect(Width, Height), Point(X, Y))
+             and PtInRect(SysWidgetRect(Width, Height), FMousePosDown)
+        then begin // click on CPU/RAM widgets: open Task Manager
+          ShellExecute(0, 'open', 'taskmgr.exe', nil, nil, SW_SHOWNORMAL);
+        end
         else if (PressedIndex <> ITEM_NONE)
         then begin // click
           // If during the execute shortcut will be a modal window with the error
@@ -1356,6 +1400,18 @@ begin
           DoClickItem(X, Y);
         end;
         PressedIndex := ITEM_NONE;
+      end;
+    mbMiddle:
+      begin
+        // Middle click: open a new window/instance of the program
+        var idx := ItemIndexByPoint( Point(X, Y) );
+        if IsItemIndex(idx)
+           and (not Items.IsSeparator(Items[idx]))
+        then begin
+          if (Items[idx] is TItemGroup)
+          then ShowGroup(idx)
+          else Items[idx].DoExecute(Handle);
+        end;
       end
     else Exit;
   end;
@@ -1401,6 +1457,7 @@ begin
     EnsureRange(IconSize, 32, 64));
   ToolTip.Cancel;
   form.OnDestroy := OnFormJumplistDestroy;
+  form.OnDragOut := DragExternalFile;
   FLockHotIndex := True;
   FLockAutoHide := True;
   form.PopupAt(itemRect, Align);
@@ -1410,6 +1467,18 @@ procedure TLinkbarWcl.DoClickItem(X, Y: Integer);
 var iIndex: Integer;
 begin
   iIndex := ItemIndexByPoint( Point(X, Y) );
+
+  // Ctrl+Shift+click: run as administrator
+  if IsItemIndex(iIndex)
+     and (GetKeyState(VK_CONTROL) < 0)
+     and (GetKeyState(VK_SHIFT) < 0)
+     and (not Items.IsSeparator(Items[iIndex]))
+     and (not (Items[iIndex] is TItemGroup))
+  then begin
+    ShellExecute(Handle, 'runas', PChar(Items[iIndex].FileName), nil, nil, SW_SHOWNORMAL);
+    Exit;
+  end;
+
   DoExecuteItem(iIndex);
 end;
 
@@ -1432,6 +1501,22 @@ begin
   dlg.ShowModal;
   dlg.Free;
   FLockAutoHide := False;
+end;
+
+{ Drag a file that is not a bar item (an icon dragged out of a group window).
+  Dropping it on the bar moves it into the links folder. }
+procedure TLinkbarWcl.DragExternalFile(const AFileName: string; AIcon: HBITMAP; AIconSize: Integer);
+begin
+  FDragIndex := ITEM_NONE;
+  FDragingItem := False;
+  FExtDragIcon := AIcon;
+  FExtDragIconSize := AIconSize;
+  try
+    DragFile(AFileName);
+  finally
+    FExtDragIcon := 0;
+    FExtDragIconSize := 0;
+  end;
 end;
 
 procedure TLinkbarWcl.RenameGroup(const AIndex: Integer);
@@ -2044,6 +2129,7 @@ begin
   Items.Sizes.Button := ButtonSize;
   Items.Sizes.Separator := SeparatorWidth;
   Items.Sizes.Margin := FGripSize;
+  Items.Sizes.Reserved := SysWidgetLength(AVertical);
   Items.UpdateLines(AVertical, AWidth, AHeight);
 
   if (AVertical)
@@ -2093,6 +2179,7 @@ begin
   Items.Sizes.Button := ButtonSize;
   Items.Sizes.Separator := SeparatorWidth;
   Items.Sizes.Margin := FGripSize;
+  Items.Sizes.Reserved := SysWidgetLength(IsVertical(Align));
   Items.UpdateLines(IsVertical(Align), Width, Height);
 
   t := Top;
@@ -2287,6 +2374,16 @@ begin
             begin
               KillTimer(Handle, TIMER_AUTO_HIDE);
               DoAutoHide;
+              Exit;
+            end;
+          TIMER_SYS_WIDGETS:
+            begin
+              RefreshSysWidgets;
+              Exit;
+            end;
+          TIMER_RUNNING:
+            begin
+              UpdateRunningState;
               Exit;
             end;
         end;
@@ -2782,10 +2879,39 @@ end;
 
 procedure TLinkbarWcl.QueryDragImage(out ABitmap: THBitmap; out AOffset: TPoint);
 var ItemRect: TRect;
+    srcDc: HDC;
+    old: HGDIOBJ;
+    bm: Winapi.Windows.TBitmap;
+    blend: TBlendFunction;
 begin
   if (not StyleServices.Enabled)
   then begin
     ABitmap := nil;
+    Exit;
+  end;
+
+  // Dragging a file that is not a bar item (icon dragged out of a group)
+  if not IsItemIndex(FDragIndex)
+  then begin
+    ABitmap := nil;
+    AOffset := Point(0, 0);
+    if (FExtDragIcon = 0) or (FExtDragIconSize <= 0)
+       or (GetObject(FExtDragIcon, SizeOf(bm), @bm) = 0)
+    then Exit;
+
+    ABitmap := THBitmap.Create(32);
+    ABitmap.SetSize(FExtDragIconSize, FExtDragIconSize);
+    blend.BlendOp := AC_SRC_OVER;
+    blend.BlendFlags := 0;
+    blend.SourceConstantAlpha := 255;
+    blend.AlphaFormat := AC_SRC_ALPHA;
+    srcDc := CreateCompatibleDC(0);
+    old := SelectObject(srcDc, FExtDragIcon);
+    Winapi.Windows.AlphaBlend(ABitmap.Dc, 0, 0, FExtDragIconSize, FExtDragIconSize,
+      srcDc, 0, 0, bm.bmWidth, Abs(bm.bmHeight), blend);
+    SelectObject(srcDc, old);
+    DeleteDC(srcDc);
+    AOffset := Point(FExtDragIconSize div 2, FExtDragIconSize div 2);
     Exit;
   end;
 
@@ -2969,6 +3095,300 @@ begin
     RecreateMainBitmap(BitmapPanel.Width, BitmapPanel.Height);
     UpdateWindow;
   end;
+end;
+
+{ ---------- "Program is open" indicator ---------- }
+
+procedure TLinkbarWcl.UpdateRunningState;
+var
+  paths: TStringList;
+  changed, running: Boolean;
+  idx: Integer;
+begin
+  if FAutoHiden or IsDragDrop or FMouseDragLinkbar or FMouseLeftDown
+  then Exit;
+
+  paths := TStringList.Create;
+  try
+    CollectRunningExePaths(paths);
+
+    changed := False;
+    for var item in Items do
+    begin
+      running := (item.TargetPath <> '') and paths.Find(item.TargetPath, idx);
+      // Group: open if any of its programs is open
+      if (not running) and (item is TItemGroup)
+      then begin
+        for var t in TItemGroup(item).MemberTargets do
+          if (t <> '') and paths.Find(t, idx)
+          then begin
+            running := True;
+            Break;
+          end;
+      end;
+      if (running <> item.Running)
+      then begin
+        item.Running := running;
+        changed := True;
+      end;
+    end;
+  finally
+    paths.Free;
+  end;
+
+  if changed
+     and (BitmapPanel.Width > 0) and (BitmapPanel.Height > 0)
+  then begin
+    var hot := FHotIndex;
+    RecreateMainBitmap(BitmapPanel.Width, BitmapPanel.Height);
+    if IsItemIndex(hot)
+    then begin
+      // refresh hover snapshot and highlight
+      const r = Items[hot].Rect;
+      BitBlt(BitmapSelected.Dc, 0, 0, r.Width, r.Height, BitmapPanel.Dc, r.Left, r.Top, SRCCOPY);
+      DrawItem(BitmapPanel, hot, True, False);
+    end;
+    UpdateWindow;
+  end;
+end;
+
+{ Small pill under the icon, like the taskbar }
+procedure TLinkbarWcl.DrawRunningMark(const ABitmap: THBitmap; const AItem: TItemBase; const ARect: TRect);
+var
+  gp: IGPGraphics;
+  brush: IGPBrush;
+  r: TRect;
+  w, h: Integer;
+  color: Cardinal;
+begin
+  if not AItem.Running
+  then Exit;
+
+  w := Max(ScaleDimension(16), (IconSize * 2) div 3); // about 2/3 of the icon width
+  h := Max(3, ScaleDimension(3));
+  case Align of
+    EPanelAlignLeft:   r := Bounds(ARect.Left + 1, ARect.Top + (ARect.Height - w) div 2, h, w);
+    EPanelAlignRight:  r := Bounds(ARect.Right - h - 1, ARect.Top + (ARect.Height - w) div 2, h, w);
+    else // top/bottom bar: under the icon
+      r := Bounds(ARect.Left + (ARect.Width - w) div 2, ARect.Bottom - h - 1, w, h);
+  end;
+
+  color := SwapRedBlue(GetImmersiveColorFromName('ImmersiveSystemAccentLight2'));
+  if ((color shr 24) = 0)
+  then color := color or $FF000000;
+
+  gp := TGPGraphics.Create(ABitmap.Dc);
+  brush := TGPSolidBrush.Create(color);
+  GPFillRoundRect(gp, brush, r, h div 2);
+end;
+
+{ ---------- CPU / RAM widgets ---------- }
+
+const
+  SYSWIDGET_COUNT = 2; // CPU, RAM
+
+function LB_GetSystemTimes(out AIdleTime, AKernelTime, AUserTime: TFileTime): BOOL; stdcall;
+  external kernel32 name 'GetSystemTimes';
+
+function FileTimeToUInt64(const AFt: TFileTime): UInt64; inline;
+begin
+  Result := (UInt64(AFt.dwHighDateTime) shl 32) or AFt.dwLowDateTime;
+end;
+
+procedure TLinkbarWcl.SetShowSysWidgets(AValue: Boolean);
+begin
+  if (AValue = FShowSysWidgets)
+  then Exit;
+  FShowSysWidgets := AValue;
+
+  if FShowSysWidgets
+  then begin
+    SampleSysStats;
+    SetTimer(Handle, TIMER_SYS_WIDGETS, 1000, nil);
+  end
+  else KillTimer(Handle, TIMER_SYS_WIDGETS);
+
+  // Re-layout: the end of the bar is reserved for the widgets
+  if Assigned(oAppBar)
+  then oAppBar.AppBarPosChanged
+  else UpdateWindowSize;
+end;
+
+{ Space kept at the end of the bar }
+function TLinkbarWcl.SysWidgetLength(const AVertical: Boolean): Integer;
+begin
+  if not FShowSysWidgets
+  then Exit(0);
+  if AVertical
+  then Result := SYSWIDGET_COUNT * Max(ButtonSize.cy, ScaleDimension(40)) + ScaleDimension(8)
+  else Result := SYSWIDGET_COUNT * Max(ButtonSize.cx, ScaleDimension(56)) + ScaleDimension(8);
+end;
+
+function TLinkbarWcl.SysWidgetRect(const AWidth, AHeight: Integer): TRect;
+var len: Integer;
+begin
+  len := SysWidgetLength(IsVertical(Align));
+  if (len = 0)
+  then Exit(TRect.Empty);
+  if IsVertical(Align)
+  then Result := Rect(0, AHeight - len, AWidth, AHeight)
+  else Result := Rect(AWidth - len, 0, AWidth, AHeight);
+end;
+
+procedure TLinkbarWcl.SampleSysStats;
+var
+  idleFt, kernelFt, userFt: TFileTime;
+  idle, kernel, user, dIdle, dTotal: UInt64;
+  mem: TMemoryStatusEx;
+begin
+  // CPU: (busy time) / (total time) since last sample
+  if LB_GetSystemTimes(idleFt, kernelFt, userFt)
+  then begin
+    idle := FileTimeToUInt64(idleFt);
+    kernel := FileTimeToUInt64(kernelFt); // includes idle
+    user := FileTimeToUInt64(userFt);
+    if (FPrevKernel <> 0)
+    then begin
+      dIdle := idle - FPrevIdle;
+      dTotal := (kernel - FPrevKernel) + (user - FPrevUser);
+      if (dTotal > 0)
+      then FCpuLoad := EnsureRange(Integer(Round(100.0 * (dTotal - dIdle) / dTotal)), 0, 100);
+    end;
+    FPrevIdle := idle;
+    FPrevKernel := kernel;
+    FPrevUser := user;
+  end;
+
+  // RAM
+  FillChar(mem, SizeOf(mem), 0);
+  mem.dwLength := SizeOf(mem);
+  if GlobalMemoryStatusEx(mem)
+  then FRamLoad := EnsureRange(Integer(mem.dwMemoryLoad), 0, 100);
+end;
+
+procedure TLinkbarWcl.DrawSysWidgets(const ABitmap: THBitmap; const AWidth, AHeight: Integer);
+const
+  CAPTIONS: array[0..SYSWIDGET_COUNT-1] of string = ('CPU', 'RAM');
+  COLORS: array[0..SYSWIDGET_COUNT-1] of Cardinal = ($FF3B82F6, $FF22C55E); // blue, green
+  COLOR_HIGH: Cardinal = $FFEF4444; // red when > 85%
+var
+  area, cell, bar, fill, tr: TRect;
+  i, value, pad, barW, barH, cellLen: Integer;
+  vertical: Boolean;
+  gp: IGPGraphics;
+  brushTrack, brushFill: IGPBrush;
+  trackColor, fillColor: Cardinal;
+  textColor: TColor;
+  dc: HDC;
+  fnt0: HGDIOBJ;
+  s: string;
+begin
+  if not FShowSysWidgets
+  then Exit;
+  area := SysWidgetRect(AWidth, AHeight);
+  if area.IsEmpty
+  then Exit;
+
+  vertical := IsVertical(Align);
+  pad := ScaleDimension(4);
+  barW := Max(3, ScaleDimension(5));
+  if vertical
+  then cellLen := (area.Height - pad * 2) div SYSWIDGET_COUNT
+  else cellLen := (area.Width - pad * 2) div SYSWIDGET_COUNT;
+
+  if (GlobalLook = ELookLight)
+  then trackColor := $33000000
+  else trackColor := $33FFFFFF;
+
+  // Text color always readable on the bar: white on dark/accent, black on light
+  // (the custom item text color may be dark, e.g. black, and disappear on a dark bar)
+  if (GlobalLook = ELookLight)
+  then textColor := clBlack
+  else textColor := clWhite;
+
+  dc := ABitmap.Dc;
+
+  // 1) Bars (GDI+)
+  gp := TGPGraphics.Create(dc);
+  brushTrack := TGPSolidBrush.Create(trackColor);
+  try
+    for i := 0 to SYSWIDGET_COUNT-1 do
+    begin
+      if (i = 0)
+      then value := FCpuLoad
+      else value := FRamLoad;
+
+      // Cell (only the button-height part of the first line is used)
+      if vertical
+      then cell := Rect(area.Left, area.Top + pad + i * cellLen, area.Left + ButtonSize.cx, area.Top + pad + (i + 1) * cellLen)
+      else cell := Rect(area.Left + pad + i * cellLen, area.Top, area.Left + pad + (i + 1) * cellLen, area.Top + ButtonSize.cy);
+
+      // Vertical bar (track + fill from the bottom)
+      barH := Min(cell.Height - pad * 2, ScaleDimension(32));
+      bar := Bounds(cell.Left + pad, cell.Top + (cell.Height - barH) div 2, barW, barH);
+      GPFillRoundRect(gp, brushTrack, bar, barW div 2);
+
+      fill := bar;
+      fill.Top := bar.Bottom - Round(bar.Height * value / 100);
+      if (fill.Height > 0)
+      then begin
+        if (value > 85)
+        then fillColor := COLOR_HIGH
+        else fillColor := COLORS[i];
+        brushFill := TGPSolidBrush.Create(fillColor);
+        GPFillRoundRect(gp, brushFill, fill, barW div 2);
+      end;
+    end;
+  finally
+    brushFill := nil;
+    brushTrack := nil;
+    gp := nil;
+  end;
+
+  // 2) Text (GDI, glass text like item captions)
+  if not StyleServices.Enabled
+  then Exit;
+  fnt0 := SelectObject(dc, Screen.IconFont.Handle);
+  try
+    for i := 0 to SYSWIDGET_COUNT-1 do
+    begin
+      if (i = 0)
+      then value := FCpuLoad
+      else value := FRamLoad;
+
+      if vertical
+      then cell := Rect(area.Left, area.Top + pad + i * cellLen, area.Left + ButtonSize.cx, area.Top + pad + (i + 1) * cellLen)
+      else cell := Rect(area.Left + pad + i * cellLen, area.Top, area.Left + pad + (i + 1) * cellLen, area.Top + ButtonSize.cy);
+      barH := Min(cell.Height - pad * 2, ScaleDimension(32));
+      bar := Bounds(cell.Left + pad, cell.Top + (cell.Height - barH) div 2, barW, barH);
+
+      // Caption (top half) and value (bottom half)
+      tr := Rect(bar.Right + pad, bar.Top - pad, cell.Right, bar.Top + bar.Height div 2);
+      s := CAPTIONS[i];
+      DrawGlassText(dc, s, tr, DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX, 0, textColor);
+      tr := Rect(bar.Right + pad, bar.Top + bar.Height div 2, cell.Right, bar.Bottom + pad);
+      s := IntToStr(value) + '%';
+      DrawGlassText(dc, s, tr, DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX, 0, textColor);
+    end;
+  finally
+    SelectObject(dc, fnt0);
+  end;
+end;
+
+{ Timer: sample and redraw only the widget area }
+procedure TLinkbarWcl.RefreshSysWidgets;
+var r: TRect;
+begin
+  SampleSysStats;
+  if FAutoHiden or IsDragDrop or FMouseDragLinkbar
+     or (BitmapPanel.Width = 0) or (BitmapPanel.Height = 0)
+  then Exit;
+  r := SysWidgetRect(BitmapPanel.Width, BitmapPanel.Height);
+  if r.IsEmpty
+  then Exit;
+  DrawBackground(BitmapPanel, r);
+  DrawSysWidgets(BitmapPanel, BitmapPanel.Width, BitmapPanel.Height);
+  UpdateWindow;
 end;
 
 procedure TLinkbarWcl.SetUseBkgndColor(AValue: Boolean);

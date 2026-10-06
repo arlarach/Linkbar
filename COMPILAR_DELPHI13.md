@@ -6,7 +6,7 @@
 |---|---|---|
 | `src/Linkbar.dpr` | En configuración **Debug** usaba `Linkbar.ExceptionDialog`, que depende de la librería **JEDI JCL** (no viene con Community Edition) → error *"File not found: JclSysUtils.dcu"* | Ahora solo se incluye si defines `USE_JCL` |
 | `src/Linkbar.dproj` | Configuración por defecto = Debug | Por defecto = **Release** |
-| `src/Linkbar.dproj` | El post-build `copy` fallaba si la carpeta tiene espacios (ej. `C:\Users\Alvaro Lara\...`) | Rutas entre comillas |
+| `src/Linkbar.dproj` | El post-build `copy` fallaba si la carpeta tiene espacios (ej. `C:\Users\Mi Nombre\...`) | Rutas entre comillas |
 | `src/Linkbar.dproj` | Referencia a paquete viejo `TntUnicodeVcl_R70` | Eliminada |
 | `components/Jumplist/JumpLists.Api.Deprecated.pas` | Tipo de `IStream.Seek` cambió entre versiones de Delphi → error *E2033 Types of actual and formal var parameters must be identical* | Usa `LargeUInt`, el mismo tipo que declara tu versión de Delphi |
 

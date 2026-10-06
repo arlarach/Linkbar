@@ -39,6 +39,10 @@ const
   URL_WEB = 'https://sourceforge.net/projects/linkbar/';
   URL_EMAIL = 'linkbar@yandex.ru';
   URL_GITHUB = 'https://github.com/ATGH15102AFMLD/Linkbar';
+  // Modified version (fork)
+  URL_FORK_GITHUB = 'https://github.com/arlarach/Linkbar';
+  ORIGINAL_AUTHOR = 'Asaq';
+  MOD_AUTHOR = 'Arlarach (2026)';
   URL_WINDOWS_HOTKEY = 'https://support.microsoft.com/en-ie/help/12445/windows-keyboard-shortcuts';
 
   // Supported extentions
@@ -109,6 +113,7 @@ const
   DEF_EDGE                      = EPanelAlignTop;
   DEF_TOOLTIP_SHOW              = True;
   DEF_MODERN_STYLE              = False;
+  DEF_SYS_WIDGETS               = False;
   DEF_ICON_SIZE                 = 32;
   DEF_ISLIGHT                   = False;
   DEF_ITEM_ORDER                = EItemOrderLeftToRight;
@@ -148,6 +153,7 @@ const
   INI_EDGE                      = 'Edge';
   INI_TOOLTIP_SHOW              = 'tooltipshow';
   INI_MODERN_STYLE              = 'modernstyle';
+  INI_SYS_WIDGETS               = 'syswidgets';
   INI_ICON_SIZE                 = 'iconsize';
   INI_ISLIGHT                   = 'usestylecombined';
   INI_ITEM_ORDER                = 'itemorder';

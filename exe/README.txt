@@ -8,7 +8,7 @@ Note:
 1) Linkbar support Windows Vista and above
 2) Linkbar work with .lnk, .url and .website files
 
-Version: 1.6.9
+Version: 1.7.0
 License type: Freeware
 OS: Windows Vista/7/8/8.1/10
 Languages: English (default), Brazilian, Сhinese-Simplified, French, Indonesian, Italian, German, Greek, Japanese, Korean, Polish, Russian, Spanish, localization support
@@ -64,6 +64,22 @@ add: For Windows 10 support dark mode for dialogs
 add: For Windows 10 support high contrast theme for panel and Jumplist
 add: Drag&Drop in Jumplists
 add: Shield for shortcut with flag "Run as Administrator" (Properties - Shortcut - Advanced)
+
+===============================================================================
+
+== Version 1.7.0 (Oct, 2026) - fork arlarach/Linkbar:
+
+add: Builds with Delphi 13 Community Edition (Win64)
+add: Modern style option (rounded hover, subtle separators)
+add: Opacity slider with live preview
+add: Dark Settings window when Windows uses dark mode
+add: Icon groups (Android-like): popup grid, drag out, reorder, rename
+add: CPU and RAM widgets (click: Task Manager)
+add: "Program is open" indicator
+add: Middle click opens a new instance, Ctrl+Shift+click runs as administrator
+add: Windows 11 detection, rounded Jumplist corners on Windows 11
+fix: 64-bit crash when switching Settings tabs (spin edit pointer truncation)
+fix: 64-bit pointer truncation in folder watcher
 
 ===============================================================================
 

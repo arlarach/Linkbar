@@ -6,6 +6,11 @@
 ![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)
 
 
+> **Fork by Arlarach** - version 1.7.0, based on Linkbar 1.6.9 by Asaq.
+> Builds with Delphi 13 Community Edition (Win64). Adds icon groups, CPU/RAM widgets,
+> "program is open" indicator, modern style, opacity slider and 64-bit fixes.
+> See [exe/README.txt](exe/README.txt) for the full change list. Original project: https://github.com/ATGH15102AFMLD/Linkbar
+
 What is Linkbar ?
 ===============================
 Linkbar is a free source code desktop toolbar. Running in the MS Windows Vista+ environment, its use is governed by

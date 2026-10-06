@@ -102,6 +102,10 @@ type
     nseCorner2GapWidth: TnSpinEdit;
     lblGithub: TLabel;
     linkGithub: TLinkLabel;
+    lblOrigAuthor: TLabel;
+    lblModBy: TLabel;
+    lblFork: TLabel;
+    linkFork: TLinkLabel;
     pnlTransparencyMode: TPanel;
     lblTransparencyMode: TLabel;
     cbbTransparencyMode: TComboBox;
@@ -127,6 +131,8 @@ type
     lblOpacity: TLabel;
     lblOpacityValue: TLabel;
     trbOpacity: TTrackBar;
+    pnlSysWidgets: TPanel;
+    chbSysWidgets: TCheckBox;
     procedure FormMouseWheel(Sender: TObject; Shift: TShiftState;
       WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
     procedure linkEmailLinkClick(Sender: TObject; const Link: string;
@@ -365,6 +371,9 @@ begin
 
   InitSpinEdit(nseJumplistRecentMax, JUMPLIST_RECENTMAX_MIN, JUMPLIST_RECENTMAX_MAX);
 
+  // CPU/RAM widgets
+  InitOffsetSize(pnlSysWidgets, pnlJumplistRecentMax);
+
 
   pgc1.Height := tsPanel.Top + pnlSeparator2.BoundsRect.Bottom + VO2 + tsPanel.Left;
 
@@ -393,6 +402,7 @@ begin
   cbbSeparatorStyle.ItemIndex := Ord(FLinkbar.SeparatorStyle);
   chbTooltipShow.Checked := FLinkbar.TooltipShow;
   chbModernStyle.Checked := FLinkbar.ModernStyle;
+  chbSysWidgets.Checked := FLinkbar.ShowSysWidgets;
 
   cbbScreenPosition.ItemIndex := Ord(FLinkbar.Align);
   cbbItemOrder.ItemIndex := Ord(FLinkbar.ItemOrder);
@@ -425,8 +435,13 @@ begin
   linkWeb.Caption    := '<a>' + URL_WEB + '</a>';
   linkEmail.Caption  := '<a>' + URL_EMAIL + '</a>';
   linkGithub.Caption := '<a>' + URL_GITHUB + '</a>';
+  linkFork.Caption   := '<a>' + URL_FORK_GITHUB + '</a>';
+  // Credits: original author is kept, modifications are credited separately
+  lblOrigAuthor.Caption := L10NFind('Properties.OriginalAuthor', 'Original author') + ': ' + ORIGINAL_AUTHOR;
+  lblModBy.Caption      := L10NFind('Properties.ModifiedBy', 'Modified by') + ': ' + MOD_AUTHOR;
   linkEmail.Left := linkGithub.Left;
   linkWeb.Left := linkGithub.Left;
+  linkFork.Left := linkGithub.Left;
 
   lblSysInfo.Caption := SystemInfo;
 
@@ -518,6 +533,7 @@ begin
   L10nControl(lblTransparencyMode,     'Properties.Transparency');
   L10nControl(cbbTransparencyMode,    ['Properties.Opaque', 'Properties.Transparent', 'Properties.Glass']);
   L10nControl(chbModernStyle,          'Properties.ModernStyle');
+  L10nControl(chbSysWidgets,           'Properties.SysWidgets');
 
   // Items
   L10nControl(lblShortcuts,            'Properties.Shortcuts');
@@ -609,7 +625,11 @@ end;
 procedure TFrmProperties.linkWebLinkClick(Sender: TObject; const Link: string;
   LinkType: TSysLinkType);
 begin
-  LBShellExecute(0, 'open', URL_WEB);
+  if (Sender = linkGithub)
+  then LBShellExecute(0, 'open', URL_GITHUB)
+  else if (Sender = linkFork)
+  then LBShellExecute(0, 'open', URL_FORK_GITHUB)
+  else LBShellExecute(0, 'open', URL_WEB);
 end;
 
 procedure TFrmProperties.Changed(Sender: TObject);
@@ -724,6 +744,7 @@ begin
   FLinkbar.SeparatorStyle := TSeparatorStyle(cbbSeparatorStyle.ItemIndex);
   FLinkbar.TooltipShow := chbTooltipShow.Checked;
   FLinkbar.ModernStyle := chbModernStyle.Checked;
+  FLinkbar.ShowSysWidgets := chbSysWidgets.Checked;
 
   FLinkbar.UpdateItemSizes;
 

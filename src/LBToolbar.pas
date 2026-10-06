@@ -13,7 +13,7 @@ interface
 
 uses
   Winapi.Windows, Winapi.ShlObj,
-  System.SysUtils, Vcl.Graphics, Generics.Collections;
+  System.SysUtils, System.Classes, Vcl.Graphics, Generics.Collections;
 
 type
   TItemBase = class
@@ -31,6 +31,8 @@ type
     Rect: TRect;
     Hash: Cardinal;
     NeedLoad: Boolean;
+    TargetPath: string;   // .exe the shortcut points to (lower case), '' if none
+    Running: Boolean;     // a window of TargetPath is open
   public
     property Kind: TKind read FKind;
     property Bitmap: HBITMAP read FBitmap;
@@ -60,6 +62,7 @@ type
     in the links folder. Icon = 2x2 preview of its content. }
   TItemGroup = class(TItemShortcut)
   public
+    MemberTargets: TArray<string>; // .exe targets of the members (for "program is open")
     class function IsGroupFile(const AFileName: string): Boolean; static;
     class function GetMemberFiles(const AFolder: string): TArray<string>; static;
     function LoadFromFile(const AFileName: string): Boolean; override;
@@ -82,6 +85,7 @@ type
     Button: TSize;
     Separator: Integer;
     Margin: Integer;
+    Reserved: Integer; // space kept free at the end of the bar (CPU/RAM widgets)
   end;
 
   TLBItemList = class(TObjectList<TItemBase>)
@@ -115,13 +119,15 @@ type
 
   function StrToHash(const AStr: string): Cardinal;
   function CreateItemForFile(const AFileName: string): TItemShortcut;
+  { Lower-case paths of programs that have a visible top-level window }
+  procedure CollectRunningExePaths(AList: TStringList);
 
 
 implementation
 
 uses
   Winapi.ActiveX, Winapi.ShellAPI, Winapi.KnownFolders,
-  System.Win.ComObj, System.Types, System.Math, System.Classes,
+  System.Win.ComObj, System.Types, System.Math,
   Linkbar.OS, Linkbar.Consts, Linkbar.Shell, ExplorerMenu;
 
 var FKnownFolderManager: IKnownFolderManager;
@@ -158,6 +164,23 @@ begin
     if (pExtract.GetIconLocation(GIL_CHECKSHIELD, location, MAX_PATH, index, flags) = S_OK)
     then Result := ((flags and GIL_SHIELD) > 0) and ((flags and GIL_FORCENOSHIELD) = 0);
     pExtract := nil;
+  end;
+end;
+
+{ Path of the .exe a shortcut points to (lower case), '' if not an .exe shortcut }
+function GetShortcutExeTarget(const APidl: PItemIDList): string;
+var pLink: IShellLink;
+    buf: array[0..MAX_PATH] of Char;
+    fd: TWin32FindData;
+begin
+  Result := '';
+  if Succeeded(GetUIObjectOfPidl(0, APidl, IShellLink, Pointer(pLink)))
+  then begin
+    FillChar(buf, SizeOf(buf), 0);
+    if Succeeded(pLink.GetPath(buf, MAX_PATH, fd, 0))
+       and SameText(ExtractFileExt(string(buf)), '.exe')
+    then Result := AnsiLowerCase(string(buf));
+    pLink := nil;
   end;
 end;
 
@@ -362,6 +385,8 @@ begin
 
     BitBucket := CheckBitBucket(Pidl);
 
+    TargetPath := GetShortcutExeTarget(Pidl);
+
     Exit(True);
   end;
 
@@ -437,30 +462,62 @@ begin
   Result := SameText(ExtractFileExt(ExcludeTrailingPathDelimiter(AFileName)), ES_GROUP);
 end;
 
+{ Members of a group: custom order from "<group>\list" (if the user reordered),
+  then the remaining files in alphabetical order }
 class function TItemGroup.GetMemberFiles(const AFolder: string): TArray<string>;
 var
   sr: TSearchRec;
-  list: TStringList;
-  dir, ext: string;
+  found, order, res: TStringList;
+  dir, ext, name: string;
+  idx: Integer;
 begin
   dir := IncludeTrailingPathDelimiter(AFolder);
-  list := TStringList.Create;
+  found := TStringList.Create;
+  order := TStringList.Create;
+  res := TStringList.Create;
   try
+    found.CaseSensitive := False;
     for ext in ES_ARRAY do
     begin
       if (FindFirst(dir + '*' + ext, faAnyFile, sr) = 0)
       then begin
         repeat
           if ((sr.Attr and faDirectory) = 0)
-          then list.Add(dir + sr.Name);
+          then found.Add(sr.Name);
         until (FindNext(sr) <> 0);
         FindClose(sr);
       end;
     end;
-    list.Sort;
-    Result := list.ToStringArray;
+    found.Sort;
+
+    // Custom order first
+    if FileExists(dir + LINKSLIST_FILE_NAME)
+    then begin
+      try
+        order.LoadFromFile(dir + LINKSLIST_FILE_NAME, TEncoding.UTF8);
+      except
+        order.Clear;
+      end;
+      for name in order do
+      begin
+        idx := found.IndexOf(Trim(name));
+        if (idx >= 0)
+        then begin
+          res.Add(dir + found[idx]);
+          found.Delete(idx);
+        end;
+      end;
+    end;
+
+    // New/unordered files at the end, alphabetical
+    for name in found do
+      res.Add(dir + name);
+
+    Result := res.ToStringArray;
   finally
-    list.Free;
+    res.Free;
+    order.Free;
+    found.Free;
   end;
 end;
 
@@ -590,9 +647,84 @@ begin
 end;
 
 procedure TItemGroup.LoadIcon(const AIconSize: Integer);
+var
+  files: TArray<string>;
+  i: Integer;
+  pidl: PItemIDList;
 begin
   DeleteObject(FBitmap);
   FBitmap := CreateGroupIcon(FileName, AIconSize);
+
+  // Cache member targets (used by the "program is open" indicator)
+  files := GetMemberFiles(FileName);
+  SetLength(MemberTargets, Length(files));
+  for i := 0 to High(files) do
+  begin
+    MemberTargets[i] := '';
+    pidl := nil;
+    if (SHParseDisplayName(PChar(files[i]), nil, pidl, 0, PDWORD(nil)^) = S_OK)
+    then try
+      MemberTargets[i] := GetShortcutExeTarget(pidl);
+    finally
+      CoTaskMemFree(pidl);
+    end;
+  end;
+end;
+
+{ ---------- running programs ---------- }
+
+const
+  LB_PROCESS_QUERY_LIMITED_INFORMATION = $1000;
+
+function LB_QueryFullProcessImageName(hProcess: THandle; dwFlags: DWORD;
+  lpExeName: PWideChar; var lpdwSize: DWORD): BOOL; stdcall;
+  external kernel32 name 'QueryFullProcessImageNameW';
+
+{ Collect process ids of windows that would appear on the taskbar }
+function EnumTaskWindowsProc(wnd: HWND; lParam: LPARAM): BOOL; stdcall;
+var pid: DWORD;
+begin
+  Result := True;
+  if not IsWindowVisible(wnd) then Exit;
+  if (GetWindow(wnd, GW_OWNER) <> 0) then Exit;
+  if ((GetWindowLongPtr(wnd, GWL_EXSTYLE) and WS_EX_TOOLWINDOW) <> 0) then Exit;
+  pid := 0;
+  GetWindowThreadProcessId(wnd, pid);
+  if (pid <> 0)
+  then TList<DWORD>(Pointer(lParam)).Add(pid);
+end;
+
+procedure CollectRunningExePaths(AList: TStringList);
+var
+  pids: TList<DWORD>;
+  pid: DWORD;
+  h: THandle;
+  buf: array[0..MAX_PATH] of Char;
+  size: DWORD;
+begin
+  AList.Clear;
+  AList.Sorted := True;
+  AList.Duplicates := dupIgnore;
+  AList.CaseSensitive := False;
+
+  pids := TList<DWORD>.Create;
+  try
+    EnumWindows(@EnumTaskWindowsProc, LPARAM(Pointer(pids)));
+    for pid in pids do
+    begin
+      h := OpenProcess(LB_PROCESS_QUERY_LIMITED_INFORMATION, False, pid);
+      if (h <> 0)
+      then try
+        size := MAX_PATH;
+        if LB_QueryFullProcessImageName(h, 0, buf, size)
+        then AList.Add(AnsiLowerCase(Copy(string(buf), 1, size)));
+      finally
+        CloseHandle(h);
+      end;
+    end;
+  finally
+    pids.Free;
+  end;
 end;
 
 { TItemSeparator }
@@ -663,7 +795,15 @@ var
   count, x, y, margin: Integer;
   offset: TPoint;
   r: TRect;
+  availW, availH: Integer;
 begin
+  // Area available for items (end of the bar may be reserved for widgets)
+  availW := AWidth;
+  availH := AHeight;
+  if AVertical
+  then availH := AHeight - Sizes.Reserved
+  else availW := AWidth - Sizes.Reserved;
+
   // Set item width and height
   for var item in Self
   do begin
@@ -706,7 +846,7 @@ begin
     then begin
       Inc(y, r.Height);
       if (i < (Self.Count - 1))
-         and ((y + Self[i+1].Rect.Height) > AHeight)
+         and ((y + Self[i+1].Rect.Height) > availH)
       then begin
         y := margin;
         Inc(x, r.Width);
@@ -718,7 +858,7 @@ begin
     else begin
       Inc(x, r.Width);
       if (i < (Self.Count - 1))
-         and ((x + Self[i+1].Rect.Width) > AWidth)
+         and ((x + Self[i+1].Rect.Width) > availW)
       then begin
         x := margin;
         Inc(y, r.Height);
@@ -753,8 +893,8 @@ begin
   then begin
     offset := TPoint.Zero;
     if (AVertical)
-    then offset.Y := ((AHeight - FLineWidth) div 2) - margin
-    else offset.X := ((AWidth  - FLineWidth) div 2) - margin;
+    then offset.Y := ((availH - FLineWidth) div 2) - margin
+    else offset.X := ((availW - FLineWidth) div 2) - margin;
 
     for var item in Self
     do item.Rect.Offset(offset);

@@ -1043,6 +1043,26 @@ object FrmProperties: TFrmProperties
           end
         end
       end
+      object pnlSysWidgets: TPanel
+        Left = 8
+        Top = 110
+        Width = 373
+        Height = 21
+        Anchors = [akLeft, akTop, akRight]
+        BevelOuter = bvNone
+        ShowCaption = False
+        TabOrder = 5
+        object chbSysWidgets: TCheckBox
+          Left = 0
+          Top = 4
+          Width = 367
+          Height = 17
+          Align = alCustom
+          Caption = 'Show CPU and RAM usage (click: Task Manager)'
+          TabOrder = 0
+          OnClick = Changed
+        end
+      end
     end
     object tsAbout: TTabSheet
       Caption = 'About'
@@ -1065,35 +1085,35 @@ object FrmProperties: TFrmProperties
       end
       object lblEmail: TLabel
         Left = 8
-        Top = 36
+        Top = 50
         Width = 35
         Height = 14
         Caption = 'e-mail:'
       end
       object lblWeb: TLabel
         Left = 8
-        Top = 56
+        Top = 70
         Width = 28
         Height = 14
         Caption = 'web:'
       end
       object lblSystemInfo: TLabel
         Left = 8
-        Top = 132
+        Top = 186
         Width = 68
         Height = 14
         Caption = 'System info:'
       end
       object lblLocalizer: TLabel
         Left = 8
-        Top = 96
+        Top = 110
         Width = 75
         Height = 14
         Caption = 'localizer: Asaq'
       end
       object lblSysInfo: TLabel
         Left = 8
-        Top = 152
+        Top = 206
         Width = 374
         Height = 70
         Anchors = [akLeft, akTop, akRight]
@@ -1104,14 +1124,14 @@ object FrmProperties: TFrmProperties
       end
       object lblGithub: TLabel
         Left = 8
-        Top = 76
+        Top = 90
         Width = 41
         Height = 14
         Caption = 'GitHub:'
       end
       object linkEmail: TLinkLabel
         Left = 46
-        Top = 36
+        Top = 50
         Width = 69
         Height = 18
         Caption = '<a href="">linkbar email</a>'
@@ -1121,7 +1141,7 @@ object FrmProperties: TFrmProperties
       end
       object linkWeb: TLinkLabel
         Left = 39
-        Top = 56
+        Top = 70
         Width = 93
         Height = 18
         Caption = '<a href="">linkbar webpage</a>'
@@ -1131,11 +1151,42 @@ object FrmProperties: TFrmProperties
       end
       object linkGithub: TLinkLabel
         Left = 52
-        Top = 76
+        Top = 90
         Width = 77
         Height = 18
         Caption = '<a href="">linkbar github</a>'
         TabOrder = 2
+        TabStop = True
+        OnLinkClick = linkWebLinkClick
+      end
+      object lblOrigAuthor: TLabel
+        Left = 8
+        Top = 30
+        Width = 100
+        Height = 14
+        Caption = 'Original author: Asaq'
+      end
+      object lblModBy: TLabel
+        Left = 8
+        Top = 138
+        Width = 100
+        Height = 14
+        Caption = 'Modified by: Arlarach'
+      end
+      object lblFork: TLabel
+        Left = 8
+        Top = 158
+        Width = 26
+        Height = 14
+        Caption = 'Fork:'
+      end
+      object linkFork: TLinkLabel
+        Left = 52
+        Top = 158
+        Width = 77
+        Height = 18
+        Caption = '<a href="">fork github</a>'
+        TabOrder = 3
         TabStop = True
         OnLinkClick = linkWebLinkClick
       end

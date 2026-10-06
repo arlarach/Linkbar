@@ -17,10 +17,20 @@ uses
   LBToolbar, Linkbar.Consts;
 
 type
+  { Called when the user drags an icon out of the group window }
+  TGroupDragOutEvent = procedure(const AFileName: string; AIcon: HBITMAP;
+    AIconSize: Integer) of object;
+
   { Popup window that shows the shortcuts of a group as a grid of icons }
   TFormGroup = class(TForm)
   private
     FItems: TObjectList<TItemShortcut>;
+    FFolder: string;
+    FOnDragOut: TGroupDragOutEvent;
+    FDownIndex: Integer;      // item under mouse on left button down
+    FDownPt: TPoint;
+    FDragging: Boolean;       // reordering inside the window
+    FDropIndex: Integer;      // insert position while reordering
     FOwnerWnd: HWND;
     FGroupCaption: string;
     FIconSize: Integer;
@@ -39,10 +49,16 @@ type
     procedure CalcLayout;
     procedure SetHot(const AValue: Integer);
     procedure ApplyCorners;
+    procedure LoadItems;
+    procedure UpdateRunning;
+    procedure SaveOrder;
+    function DropIndexAt(const APoint: TPoint): Integer;
+    procedure DoSortAlphabetically(Sender: TObject);
   protected
     procedure CreateParams(var Params: TCreateParams); override;
     procedure WndProc(var Message: TMessage); override;
     procedure Paint; override;
+    procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Integer); override;
     procedure MouseMove(Shift: TShiftState; X, Y: Integer); override;
     procedure MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: Integer); override;
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
@@ -52,28 +68,31 @@ type
       const AFolder, ACaption: string; AIconSize: Integer);
     destructor Destroy; override;
     procedure PopupAt(const AItemRect: TRect; const AAlign: TPanelAlign);
+    property OnDragOut: TGroupDragOutEvent read FOnDragOut write FOnDragOut;
   end;
 
 implementation
 
 uses
-  System.Math, GdiPlus,
+  System.Math, GdiPlus, Vcl.Menus,
   ExplorerMenu, Linkbar.Theme, Linkbar.OS, Linkbar.L10n;
 
 { TFormGroup }
 
 constructor TFormGroup.CreateGroup(AOwner: TComponent; AOwnerWnd: HWND;
   const AFolder, ACaption: string; AIconSize: Integer);
-var
-  item: TItemShortcut;
-  fileName: string;
 begin
   inherited CreateNew(AOwner);
 
   FOwnerWnd := AOwnerWnd;
+  FFolder := AFolder;
   FGroupCaption := ACaption;
   FIconSize := AIconSize;
   FHot := -1;
+  FDownIndex := -1;
+  FDropIndex := -1;
+  FDragging := False;
+  ControlStyle := ControlStyle + [csCaptureMouse];
 
   BorderStyle := bsNone;
   FormStyle := fsStayOnTop;
@@ -97,9 +116,18 @@ begin
   end;
   Color := FBgColor;
 
-  // Load group content
   FItems := TObjectList<TItemShortcut>.Create(True);
-  for fileName in TItemGroup.GetMemberFiles(AFolder) do
+  LoadItems;
+  CalcLayout;
+end;
+
+procedure TFormGroup.LoadItems;
+var
+  item: TItemShortcut;
+  fileName: string;
+begin
+  FItems.Clear;
+  for fileName in TItemGroup.GetMemberFiles(FFolder) do
   begin
     item := TItemShortcut.Create;
     if item.LoadFromFile(fileName)
@@ -109,8 +137,71 @@ begin
     end
     else item.Free;
   end;
+  UpdateRunning;
+end;
 
-  CalcLayout;
+{ "Program is open" indicator for the icons of the group }
+procedure TFormGroup.UpdateRunning;
+var
+  paths: TStringList;
+  item: TItemShortcut;
+  idx: Integer;
+begin
+  paths := TStringList.Create;
+  try
+    CollectRunningExePaths(paths);
+    for item in FItems do
+      item.Running := (item.TargetPath <> '') and paths.Find(item.TargetPath, idx);
+  finally
+    paths.Free;
+  end;
+end;
+
+{ Save current order to "<group>\list" (the group icon follows it too) }
+procedure TFormGroup.SaveOrder;
+var
+  sl: TStringList;
+  item: TItemShortcut;
+begin
+  sl := TStringList.Create;
+  try
+    for item in FItems do
+      sl.Add(ExtractFileName(item.FileName));
+    try
+      sl.SaveToFile(IncludeTrailingPathDelimiter(FFolder) + LINKSLIST_FILE_NAME, TEncoding.UTF8);
+    except
+      // ignore: read-only folder etc.
+    end;
+  finally
+    sl.Free;
+  end;
+end;
+
+procedure TFormGroup.DoSortAlphabetically(Sender: TObject);
+begin
+  System.SysUtils.DeleteFile(IncludeTrailingPathDelimiter(FFolder) + LINKSLIST_FILE_NAME);
+  LoadItems;
+  Invalidate;
+end;
+
+{ Insert position for reordering: before the cell under the point (left half)
+  or after it (right half) }
+function TFormGroup.DropIndexAt(const APoint: TPoint): Integer;
+var
+  i: Integer;
+  r: TRect;
+begin
+  for i := 0 to FItems.Count-1 do
+  begin
+    r := CellRect(i);
+    if r.Contains(APoint)
+    then begin
+      if (APoint.X < r.CenterPoint.X)
+      then Exit(i)
+      else Exit(i + 1);
+    end;
+  end;
+  Result := -1;
 end;
 
 destructor TFormGroup.Destroy;
@@ -274,28 +365,148 @@ begin
 
     DrawItemIcon(FItems[i], r.Left + (r.Width - FIconSize) div 2, r.Top + Scale(10));
 
+    // "Program is open" indicator under the icon
+    if FItems[i].Running
+    then begin
+      gp := TGPGraphics.Create(Canvas.Handle);
+      brush := TGPSolidBrush.Create(SwapRedBlue(GetImmersiveColorFromName('ImmersiveSystemAccentLight2')) or $FF000000);
+      tr := Bounds(r.Left + (r.Width - Max(Scale(16), (FIconSize * 2) div 3)) div 2,
+                   r.Top + Scale(10) + FIconSize + Scale(2),
+                   Max(Scale(16), (FIconSize * 2) div 3), Max(3, Scale(3)));
+      GPFillRoundRect(gp, brush, tr, tr.Height div 2);
+      gp := nil;
+    end;
+
     tr := Rect(r.Left + Scale(4), r.Top + Scale(10) + FIconSize + Scale(6),
                r.Right - Scale(4), r.Bottom - Scale(4));
     DrawText(Canvas.Handle, PChar(FItems[i].Caption), -1, tr,
       DT_CENTER or DT_WORDBREAK or DT_EDITCONTROL or DT_END_ELLIPSIS or DT_NOPREFIX);
   end;
+
+  // Reorder: insertion marker
+  if FDragging and (FDropIndex >= 0)
+  then begin
+    if (FDropIndex < FItems.Count)
+    then begin
+      r := CellRect(FDropIndex);
+      tr := Rect(r.Left - Scale(1), r.Top + Scale(6), r.Left + Scale(2), r.Top + Scale(10) + FIconSize + Scale(4));
+    end
+    else begin
+      r := CellRect(FItems.Count - 1);
+      tr := Rect(r.Right - Scale(2), r.Top + Scale(6), r.Right + Scale(1), r.Top + Scale(10) + FIconSize + Scale(4));
+    end;
+    Canvas.Brush.Style := bsSolid;
+    Canvas.Brush.Color := FTextColor;
+    Canvas.FillRect(tr);
+  end;
+end;
+
+procedure TFormGroup.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
+begin
+  inherited;
+  if (Button = mbLeft)
+  then begin
+    FDownIndex := IndexAt(Point(X, Y));
+    FDownPt := Point(X, Y);
+    FDragging := False;
+    FDropIndex := -1;
+  end;
 end;
 
 procedure TFormGroup.MouseMove(Shift: TShiftState; X, Y: Integer);
+var
+  pt: TPoint;
+  item: TItemShortcut;
 begin
   inherited;
-  SetHot(IndexAt(Point(X, Y)));
+  pt := Point(X, Y);
+
+  if (ssLeft in Shift) and (FDownIndex >= 0)
+  then begin
+    // Start dragging after the system drag threshold
+    if not FDragging
+       and ((Abs(X - FDownPt.X) > GetSystemMetrics(SM_CXDRAG))
+            or (Abs(Y - FDownPt.Y) > GetSystemMetrics(SM_CYDRAG)))
+    then FDragging := True;
+
+    if FDragging
+    then begin
+      if PtInRect(ClientRect, pt)
+      then begin
+        // Reorder inside the window
+        FDropIndex := DropIndexAt(pt);
+        SetHot(-1);
+        Invalidate;
+      end
+      else begin
+        // Left the window: drag the shortcut out (e.g. back to the bar)
+        item := FItems[FDownIndex];
+        FDragging := False;
+        FDownIndex := -1;
+        FDropIndex := -1;
+        MouseCapture := False;
+        Invalidate;
+        if Assigned(FOnDragOut)
+        then FOnDragOut(item.FileName, item.Bitmap, FIconSize);
+        Close;
+      end;
+      Exit;
+    end;
+  end;
+
+  SetHot(IndexAt(pt));
 end;
 
 procedure TFormGroup.MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
 var
-  i: Integer;
+  i, src, dst: Integer;
   pt: TPoint;
+  menu: TPopupMenu;
+  mi: TMenuItem;
 begin
   inherited;
+
+  // Finish reordering
+  if (Button = mbLeft) and FDragging
+  then begin
+    src := FDownIndex;
+    dst := FDropIndex;
+    FDragging := False;
+    FDownIndex := -1;
+    FDropIndex := -1;
+    if (src >= 0) and (dst >= 0)
+    then begin
+      if (dst > src) then Dec(dst);
+      if (dst <> src) and (dst < FItems.Count)
+      then begin
+        FItems.Move(src, dst);
+        SaveOrder;
+      end;
+    end;
+    Invalidate;
+    Exit;
+  end;
+
+  // Right click on the title / empty area: group menu
+  if (Button = mbRight) and (IndexAt(Point(X, Y)) < 0)
+  then begin
+    menu := TPopupMenu.Create(Self);
+    mi := TMenuItem.Create(menu);
+    mi.Caption := L10NFind('Group.SortAlphabetically', 'Sort alphabetically');
+    mi.OnClick := DoSortAlphabetically;
+    menu.Items.Add(mi);
+    pt := ClientToScreen(Point(X, Y));
+    menu.Popup(pt.X, pt.Y);
+    Exit;
+  end;
+
   i := IndexAt(Point(X, Y));
-  if (i < 0)
-  then Exit;
+  if (i < 0) or ((Button = mbLeft) and (i <> FDownIndex))
+  then begin
+    FDownIndex := -1;
+    Exit;
+  end;
+  FDownIndex := -1;
 
   if (Button = mbLeft)
   then begin
