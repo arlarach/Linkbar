@@ -1814,6 +1814,10 @@ begin
 
     PaintForm(oBgBmp.Dc);
 
+    // Windows 11: rounded window corners for the Jumplist in modern style
+    if GlobalModernStyle
+    then ThemeSetRoundCorners11(Handle, False);
+
     { Check window animation }
     if (not IsWindowVisible(Handle))
        and AnimationTaskbarEnabled

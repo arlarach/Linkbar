@@ -326,6 +326,26 @@ object FrmProperties: TFrmProperties
             'Glass')
         end
       end
+      object pnlModernStyle: TPanel
+        Left = 8
+        Top = 337
+        Width = 373
+        Height = 21
+        Anchors = [akLeft, akTop, akRight]
+        BevelOuter = bvNone
+        ShowCaption = False
+        TabOrder = 9
+        object chbModernStyle: TCheckBox
+          Left = 0
+          Top = 4
+          Width = 367
+          Height = 17
+          Align = alCustom
+          Caption = 'Modern style (rounded corners)'
+          TabOrder = 0
+          OnClick = Changed
+        end
+      end
     end
     object tsItems: TTabSheet
       Caption = 'Items'

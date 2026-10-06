@@ -28,6 +28,8 @@ var
   IsWindows8Dot1OrAbove,
   IsWindows10OrAbove: Boolean;
 
+  IsWindows11OrAbove: Boolean; // Windows 11 = 10.0 build 22000+
+
   IsMinimumSupportedOS: Boolean;
 
   IsJumplistAvailable: Boolean;
@@ -135,6 +137,7 @@ begin
   IsWindows8OrAbove     := TOSVersion.Check( 6, 2);
   IsWindows8Dot1OrAbove := TOSVersion.Check( 6, 3);
   IsWindows10OrAbove    := TOSVersion.Check(10, 0);
+  IsWindows11OrAbove    := IsWindows10OrAbove and (TOSVersion.Build >= 22000);
 
   IsMinimumSupportedOS  := IsWindowsVistaOrAbove;
 

@@ -84,6 +84,7 @@ type
     FEnableAeroGlass: Boolean;
     FGripSize: Integer;
     FTooltipShow: Boolean;
+    FModernStyle: Boolean;
     FHotkeyInfo: THotkeyInfo;
     FItemMargin: TSize;
     FIconSize: Integer;
@@ -134,6 +135,7 @@ type
     procedure SetStayOnTop(AValue: Boolean);
     procedure SetTransparencyMode(AValue: TTransparencyMode);
     procedure SetLook(AValue: TLook);
+    procedure SetModernStyle(AValue: Boolean);
     procedure SetUseBkgndColor(AValue: Boolean);
     function GetAlign: TPanelAlign;
     procedure DrawBackground(const ABitmap: THBitmap; const AClipRect: TRect);
@@ -231,6 +233,7 @@ type
     property EnableAeroGlass: Boolean read FEnableAeroGlass write SetEnableAeroGlass;
     property GlowSize: Integer read FGlowSize write FGlowSize;
     property TooltipShow: Boolean read FTooltipShow write FTooltipShow;
+    property ModernStyle: Boolean read FModernStyle write SetModernStyle;
     property HotIndex: Integer read FHotIndex write SetHotIndex;
     property HotkeyInfo: THotkeyInfo read FHotkeyInfo write SetHotkeyInfo;
     property IconSize: Integer read FIconSize write SetIconSize;
@@ -814,6 +817,7 @@ begin
   FEnableAeroGlass      := settings.Read(INI_ENABLE_AG, DEF_ENABLE_AG);
   FGlowSize             := settings.Read(INI_GLOWSIZE, DEF_GLOWSIZE, GLOW_SIZE_MIN, GLOW_SIZE_MAX);
   FTooltipShow          := settings.Read(INI_TOOLTIP_SHOW, DEF_TOOLTIP_SHOW);
+  FModernStyle          := settings.Read(INI_MODERN_STYLE, DEF_MODERN_STYLE);
   hki                   := settings.Read(INI_AUTOHIDE_HOTKEY, DEF_AUTOHIDE_HOTKEY);
   FIconSize             := settings.Read(INI_ICON_SIZE, DEF_ICON_SIZE, ICON_SIZE_MIN, ICON_SIZE_MAX);
   FIsLightStyle         := settings.Read(INI_ISLIGHT, DEF_ISLIGHT);
@@ -857,6 +861,7 @@ begin
   GlobalLayout := FLayout;
   GlobalLook := FLook;
   GlobalAeroGlassEnabled := FEnableAeroGlass;
+  GlobalModernStyle := FModernStyle;
 
   // Register Hotkey
   HotkeyInfo := hki;
@@ -923,6 +928,7 @@ begin
     settings.Write(INI_SEPARATOR_WIDTH, FSeparatorWidth);
     settings.Write(INI_SEPARATOR_STYLE, Integer(FSeparatorStyle));
     settings.Write(INI_TOOLTIP_SHOW, FTooltipShow);
+    settings.Write(INI_MODERN_STYLE, FModernStyle);
     // Save
     settings.Close;
   end;
@@ -2854,6 +2860,26 @@ begin
   FLook := AValue;
   UpdateBackgroundColor;
   ThemeSetWindowAccentPolicy10(Handle, FTransparencyMode, BackgroundColor);
+end;
+
+procedure TLinkbarWcl.SetModernStyle(AValue: Boolean);
+begin
+  if (AValue = FModernStyle)
+  then Exit;
+
+  FModernStyle := AValue;
+  GlobalModernStyle := AValue;
+
+  // Redraw cached button (hover/pressed) bitmap
+  BitmapButton.Clear;
+  ThemeDrawButton(BitmapButton, BitmapButton.Bound, False);
+
+  // Redraw panel (separators)
+  if (BitmapPanel.Width > 0) and (BitmapPanel.Height > 0)
+  then begin
+    RecreateMainBitmap(BitmapPanel.Width, BitmapPanel.Height);
+    UpdateWindow;
+  end;
 end;
 
 procedure TLinkbarWcl.SetUseBkgndColor(AValue: Boolean);

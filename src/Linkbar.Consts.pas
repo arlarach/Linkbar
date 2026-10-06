@@ -104,6 +104,7 @@ const
   DEF_ITEMS_ALIGN               = EPanelLayoutLeft;
   DEF_EDGE                      = EPanelAlignTop;
   DEF_TOOLTIP_SHOW              = True;
+  DEF_MODERN_STYLE              = False;
   DEF_ICON_SIZE                 = 32;
   DEF_ISLIGHT                   = False;
   DEF_ITEM_ORDER                = EItemOrderLeftToRight;
@@ -142,6 +143,7 @@ const
   INI_ITEMS_ALIGN               = 'itemsalign';
   INI_EDGE                      = 'Edge';
   INI_TOOLTIP_SHOW              = 'tooltipshow';
+  INI_MODERN_STYLE              = 'modernstyle';
   INI_ICON_SIZE                 = 'iconsize';
   INI_ISLIGHT                   = 'usestylecombined';
   INI_ITEM_ORDER                = 'itemorder';
@@ -176,6 +178,7 @@ var
   GlobalLayout:           TPanelLayout = DEF_ITEMS_ALIGN;
   GlobalLook:             TLook        = DEF_COLORMODE;
   GlobalAeroGlassEnabled: Boolean      = DEF_ENABLE_AG;
+  GlobalModernStyle:      Boolean      = DEF_MODERN_STYLE; // rounded hover/pressed, subtle separators
 
 implementation
 

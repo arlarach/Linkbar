@@ -254,6 +254,8 @@ procedure Win10_DrawJlButton(const AHdc: HDC; const APart, AState: Integer; cons
 var
   color: Cardinal;
   gpDrawer: IGPGraphics;
+  brush: IGPBrush;
+  r: TRect;
 begin
   case APart of
     LB_JLP_BUTTON, LB_JLP_BUTTON_LEFT, LB_JLP_FOOTER_BUTTON:
@@ -276,7 +278,15 @@ begin
 
   gpDrawer := TGPGraphics.Create(AHdc);
   //gpDrawer.SetClip( TGPRect.Create(ABtnRect) );
-  gpDrawer.FillRectangle(TGPSolidBrush.Create(color), TGPRect.Create(ABtnRect));
+  if GlobalModernStyle
+  then begin
+    // Windows 11 like rounded highlight
+    r := ABtnRect;
+    r.Inflate(-ScaleDimension(3), -ScaleDimension(1));
+    brush := TGPSolidBrush.Create(color);
+    GPFillRoundRect(gpDrawer, brush, r, ScaleDimension(4));
+  end
+  else gpDrawer.FillRectangle(TGPSolidBrush.Create(color), TGPRect.Create(ABtnRect));
 end;
 
 procedure Win78_DrawJlButton(const AHdc: HDC; const APart, AState: Integer; const ABtnRect: TRect);

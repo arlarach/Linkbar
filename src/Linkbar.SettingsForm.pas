@@ -121,6 +121,8 @@ type
     cbbSeparatorStyle: TComboBox;
     chbTooltipShow: TCheckBox;
     pnlTooltipShow: TPanel;
+    pnlModernStyle: TPanel;
+    chbModernStyle: TCheckBox;
     procedure FormMouseWheel(Sender: TObject; Shift: TShiftState;
       WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
     procedure linkEmailLinkClick(Sender: TObject; const Link: string;
@@ -148,6 +150,7 @@ type
     edtHotKey: THotKeyEdit;
     FCanChanged: Boolean;
     procedure SetBackgroundColor(AValue: Cardinal);
+    procedure ApplyDarkStyle;
     procedure SetTextColor(AValue: Cardinal);
     function ScaleDimension(const X: Integer): Integer;
     procedure L10n;
@@ -170,7 +173,7 @@ implementation
 {$R *.dfm}
 
 uses
-  Math, Graphics, Vcl.Clipbrd,
+  Math, Graphics, Vcl.Clipbrd, Vcl.Themes, System.Win.Registry, System.StrUtils,
   Linkbar.Consts, Linkbar.OS, Linkbar.Shell, Linkbar.Theme, Linkbar.L10n, Linkbar.Common;
 
 function TFrmProperties.ScaleDimension(const X: Integer): Integer;
@@ -285,6 +288,8 @@ begin
   InitOffsetSize(pnlColorMode, lblSectionWindows);
   pnlTransparencyMode.Visible := IsWindows10;
   InitOffsetSize(pnlTransparencyMode, pnlColorMode);
+  pnlModernStyle.Visible := IsWindows10;
+  InitOffsetSize(pnlModernStyle, pnlTransparencyMode);
 
   { Page Items }
 
@@ -374,6 +379,7 @@ begin
   nseSeparatorWidth.Value := FLinkbar.SeparatorWidth;
   cbbSeparatorStyle.ItemIndex := Ord(FLinkbar.SeparatorStyle);
   chbTooltipShow.Checked := FLinkbar.TooltipShow;
+  chbModernStyle.Checked := FLinkbar.ModernStyle;
 
   cbbScreenPosition.ItemIndex := Ord(FLinkbar.Align);
   cbbItemOrder.ItemIndex := Ord(FLinkbar.ItemOrder);
@@ -410,9 +416,59 @@ begin
 
   lblSysInfo.Caption := SystemInfo;
 
+  ApplyDarkStyle;
+
   FCanChanged := True;
   Changed(nil);
   btnApply.Enabled := False;
+end;
+
+{ True when Windows "Choose your default app mode" = Dark }
+function SystemAppsUseDarkTheme: Boolean;
+var reg: TRegistry;
+begin
+  Result := False;
+  reg := TRegistry.Create(KEY_READ);
+  try
+    reg.RootKey := HKEY_CURRENT_USER;
+    if reg.OpenKeyReadOnly('Software\Microsoft\Windows\CurrentVersion\Themes\Personalize')
+       and reg.ValueExists('AppsUseLightTheme')
+    then Result := (reg.ReadInteger('AppsUseLightTheme') = 0);
+  finally
+    reg.Free;
+  end;
+end;
+
+{ Dark Settings window when Windows uses dark mode for apps.
+  Uses a VCL style applied only to this form (per-form styling, Delphi 11+).
+  The style must be embedded in the exe:
+  Project > Options > Application > Appearance > check "Windows11 Modern Dark".
+  If no dark style is embedded, nothing changes. }
+procedure TFrmProperties.ApplyDarkStyle;
+const
+  DarkStyles: array[0..3] of string = (
+    'Windows11 Modern Dark', 'Windows11 Polar Dark', 'Windows10 Dark', 'Windows10 SlateGray');
+var
+  wanted, available: string;
+begin
+  if not (IsWindows10 and SystemAppsUseDarkTheme)
+  then Exit;
+
+  for wanted in DarkStyles do
+    for available in TStyleManager.StyleNames do
+      if SameText(wanted, available)
+      then begin
+        StyleName := available;
+        Exit;
+      end;
+
+  // Fallback: any embedded style with "Dark" in its name
+  for available in TStyleManager.StyleNames do
+    if ContainsText(available, 'Dark')
+    then begin
+      StyleName := available;
+      Exit;
+    end;
 end;
 
 procedure TFrmProperties.L10n;
@@ -446,6 +502,7 @@ begin
   L10nControl(cbbColorMode,           ['Properties.Light', 'Properties.Dark', 'Properties.Accent']);
   L10nControl(lblTransparencyMode,     'Properties.Transparency');
   L10nControl(cbbTransparencyMode,    ['Properties.Opaque', 'Properties.Transparent', 'Properties.Glass']);
+  L10nControl(chbModernStyle,          'Properties.ModernStyle');
 
   // Items
   L10nControl(lblShortcuts,            'Properties.Shortcuts');
@@ -644,6 +701,7 @@ begin
   FLinkbar.SeparatorWidth := nseSeparatorWidth.Value;
   FLinkbar.SeparatorStyle := TSeparatorStyle(cbbSeparatorStyle.ItemIndex);
   FLinkbar.TooltipShow := chbTooltipShow.Checked;
+  FLinkbar.ModernStyle := chbModernStyle.Checked;
 
   FLinkbar.UpdateItemSizes;
 

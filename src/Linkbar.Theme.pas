@@ -47,6 +47,11 @@ type
   function SwapRedBlue(const AColor: Cardinal): Cardinal; inline;
   function ScaleDimension(const AValue: Integer): Integer; inline;
 
+  { Modern style helpers }
+  procedure GPFillRoundRect(const AGraphics: IGPGraphics; const ABrush: IGPBrush;
+    const ARect: TRect; ARadius: Integer);
+  procedure ThemeSetRoundCorners11(const AWnd: HWND; const ASmall: Boolean);
+
 var
   ThemeButtonNormalTextColor, ThemeButtonSelectedTextColor, ThemeButtonPressedTextColor: TColor;
 
@@ -411,6 +416,57 @@ begin
 end;
 
 ////////////////////////////////////////////////////////////////////////////////
+// Modern style helpers
+////////////////////////////////////////////////////////////////////////////////
+
+{ Fill a rounded rectangle with antialiasing }
+procedure GPFillRoundRect(const AGraphics: IGPGraphics; const ABrush: IGPBrush;
+  const ARect: TRect; ARadius: Integer);
+var
+  path: IGPGraphicsPath;
+  d: Integer;
+begin
+  if (ARect.Width <= 0) or (ARect.Height <= 0)
+  then Exit;
+
+  ARadius := Min(ARadius, Min(ARect.Width, ARect.Height) div 2);
+  if (ARadius <= 0)
+  then begin
+    AGraphics.FillRectangle(ABrush, TGPRect.Create(ARect));
+    Exit;
+  end;
+
+  d := ARadius * 2;
+  path := TGPGraphicsPath.Create;
+  path.AddArc(TGPRect.Create(ARect.Left,      ARect.Top,        d, d), 180, 90);
+  path.AddArc(TGPRect.Create(ARect.Right - d, ARect.Top,        d, d), 270, 90);
+  path.AddArc(TGPRect.Create(ARect.Right - d, ARect.Bottom - d, d, d),   0, 90);
+  path.AddArc(TGPRect.Create(ARect.Left,      ARect.Bottom - d, d, d),  90, 90);
+  path.CloseFigure;
+
+  AGraphics.SmoothingMode := SmoothingModeAntiAlias;
+  AGraphics.FillPath(ABrush, path);
+end;
+
+{ Windows 11: ask DWM to round the window corners (no effect on Windows 10) }
+procedure ThemeSetRoundCorners11(const AWnd: HWND; const ASmall: Boolean);
+const
+  LB_DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+  LB_DWMWCP_ROUND      = 2;
+  LB_DWMWCP_ROUNDSMALL = 3;
+var
+  pref: Integer;
+begin
+  if not IsWindows11OrAbove
+  then Exit;
+
+  if ASmall
+  then pref := LB_DWMWCP_ROUNDSMALL
+  else pref := LB_DWMWCP_ROUND;
+  DwmSetWindowAttribute(AWnd, LB_DWMWA_WINDOW_CORNER_PREFERENCE, @pref, SizeOf(pref));
+end;
+
+////////////////////////////////////////////////////////////////////////////////
 // Draw Themes Button
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -454,6 +510,8 @@ procedure Win10_DrawThemedButton(ADc: HDC; const ARect: TRect; APressed: Boolean
 var
   gpDrawer: IGPGraphics;
   color: Cardinal;
+  r: TRect;
+  brush: IGPBrush;
 begin
   gpDrawer := TGPGraphics.Create(ADc);
 
@@ -461,7 +519,15 @@ begin
   then color := (Trunc(255.0 * 0.10) shl 24) or $00000000
   else color := (Trunc(255.0 * 0.10) shl 24) or $00ffffff;
 
-  gpDrawer.FillRectangle(TGPSolidBrush.Create(color), TGPRect.Create(ARect));
+  if GlobalModernStyle
+  then begin
+    // Windows 11 like: small gap around the button and rounded corners
+    r := ARect;
+    r.Inflate(-ScaleDimension(2), -ScaleDimension(2));
+    brush := TGPSolidBrush.Create(color);
+    GPFillRoundRect(gpDrawer, brush, r, ScaleDimension(4));
+  end
+  else gpDrawer.FillRectangle(TGPSolidBrush.Create(color), TGPRect.Create(ARect));
 end;
 
 procedure ThemeDrawButton(const ABitmap: THBitmap; const ARect: TRect;
@@ -598,7 +664,10 @@ var
   color: Cardinal;
   name: string;
 begin
-  sr := TSize.Create(ScaleDimension(2), ScaleDimension(4));
+  // sr.cx = line thickness, sr.cy = gap at the line ends
+  if GlobalModernStyle
+  then sr := TSize.Create(Max(1, ScaleDimension(1)), ScaleDimension(8))
+  else sr := TSize.Create(ScaleDimension(2), ScaleDimension(4));
 
   if (AAlign = EPanelAlignLeft) or (AAlign = EPanelAlignRight)
   then begin
@@ -620,6 +689,14 @@ begin
   end;
   color := SwapRedBlue(GetImmersiveColorFromName(name));
   //color := (Trunc(255.0 * 0.932) shl 24) or (color and $00ffffff);
+
+  // Modern style: thin neutral line instead of accent colored bar
+  if GlobalModernStyle
+  then begin
+    if (GlobalLook = ELookLight)
+    then color := (Cardinal(70) shl 24) or $00000000
+    else color := (Cardinal(70) shl 24) or $00ffffff;
+  end;
 
   gpDrawer := TGPGraphics.Create(ADc);
   gpDrawer.FillRectangle(TGPSolidBrush.Create(color), TGPRect.Create(r));
