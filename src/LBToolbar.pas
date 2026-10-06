@@ -56,6 +56,16 @@ type
     function GetDropPart(const APoint: TPoint; const AVertical: Boolean; const ASideOnly: Boolean = False): Integer; override;
   end;
 
+  { Group of shortcuts (Android-like folder). A sub-folder "<name>.group"
+    in the links folder. Icon = 2x2 preview of its content. }
+  TItemGroup = class(TItemShortcut)
+  public
+    class function IsGroupFile(const AFileName: string): Boolean; static;
+    class function GetMemberFiles(const AFolder: string): TArray<string>; static;
+    function LoadFromFile(const AFileName: string): Boolean; override;
+    procedure LoadIcon(const AIconSize: Integer); override;
+  end;
+
   TItemSeparator = class(TItemBase)
   private const
     SEPARATOR_CAPTION: string = '|';
@@ -104,13 +114,14 @@ type
   end;
 
   function StrToHash(const AStr: string): Cardinal;
+  function CreateItemForFile(const AFileName: string): TItemShortcut;
 
 
 implementation
 
 uses
   Winapi.ActiveX, Winapi.ShellAPI, Winapi.KnownFolders,
-  System.Win.ComObj, System.Types, System.Math,
+  System.Win.ComObj, System.Types, System.Math, System.Classes,
   Linkbar.OS, Linkbar.Consts, Linkbar.Shell, ExplorerMenu;
 
 var FKnownFolderManager: IKnownFolderManager;
@@ -410,6 +421,178 @@ begin
     else if (APoint.X >= (Rect.Left + part1sz + part0sz))
          then Result := 1
   end;
+end;
+
+{ TItemGroup }
+
+function CreateItemForFile(const AFileName: string): TItemShortcut;
+begin
+  if TItemGroup.IsGroupFile(AFileName)
+  then Result := TItemGroup.Create
+  else Result := TItemShortcut.Create;
+end;
+
+class function TItemGroup.IsGroupFile(const AFileName: string): Boolean;
+begin
+  Result := SameText(ExtractFileExt(ExcludeTrailingPathDelimiter(AFileName)), ES_GROUP);
+end;
+
+class function TItemGroup.GetMemberFiles(const AFolder: string): TArray<string>;
+var
+  sr: TSearchRec;
+  list: TStringList;
+  dir, ext: string;
+begin
+  dir := IncludeTrailingPathDelimiter(AFolder);
+  list := TStringList.Create;
+  try
+    for ext in ES_ARRAY do
+    begin
+      if (FindFirst(dir + '*' + ext, faAnyFile, sr) = 0)
+      then begin
+        repeat
+          if ((sr.Attr and faDirectory) = 0)
+          then list.Add(dir + sr.Name);
+        until (FindNext(sr) <> 0);
+        FindClose(sr);
+      end;
+    end;
+    list.Sort;
+    Result := list.ToStringArray;
+  finally
+    list.Free;
+  end;
+end;
+
+function TItemGroup.LoadFromFile(const AFileName: string): Boolean;
+begin
+  Result := inherited LoadFromFile(AFileName);
+  if Result
+  then Caption := ChangeFileExt(ExtractFileName(ExcludeTrailingPathDelimiter(AFileName)), '');
+end;
+
+{ Group icon: rounded translucent square with up to 4 mini icons (2x2) }
+function CreateGroupIcon(const AFolder: string; const AIconSize: Integer): HBITMAP;
+var
+  bmi: TBitmapInfo;
+  bits: Pointer;
+  px: PCardinal;
+  x, y, i, n, pad, cell, radius: Integer;
+  fx, fy, dx, dy, d, cov, baseA: Double;
+  a, c: Cardinal;
+  white: Boolean;
+  files: TArray<string>;
+  dc, srcDc: HDC;
+  old, oldSrc: HGDIOBJ;
+  pidl: PItemIDList;
+  ico: HBITMAP;
+  bm: Winapi.Windows.TBitmap;
+  bf: TBlendFunction;
+begin
+  Result := 0;
+  if (AIconSize <= 0)
+  then Exit;
+
+  FillChar(bmi, SizeOf(bmi), 0);
+  bmi.bmiHeader.biSize := SizeOf(bmi.bmiHeader);
+  bmi.bmiHeader.biWidth := AIconSize;
+  bmi.bmiHeader.biHeight := -AIconSize; // top-down
+  bmi.bmiHeader.biPlanes := 1;
+  bmi.bmiHeader.biBitCount := 32;
+  bmi.bmiHeader.biCompression := BI_RGB;
+  bits := nil;
+  Result := CreateDIBSection(0, bmi, DIB_RGB_COLORS, bits, 0, 0);
+  if (Result = 0) or (bits = nil)
+  then Exit;
+
+  // Background (premultiplied ARGB)
+  white := (GlobalLook <> ELookLight);
+  if white
+  then baseA := 0.22
+  else baseA := 0.12;
+  radius := AIconSize div 4;
+  if (radius < 2) then radius := 2;
+
+  px := bits;
+  for y := 0 to AIconSize-1 do
+    for x := 0 to AIconSize-1 do
+    begin
+      fx := x + 0.5;
+      fy := y + 0.5;
+      dx := 0;
+      if (fx < radius) then dx := radius - fx
+      else if (fx > AIconSize - radius) then dx := fx - (AIconSize - radius);
+      dy := 0;
+      if (fy < radius) then dy := radius - fy
+      else if (fy > AIconSize - radius) then dy := fy - (AIconSize - radius);
+      d := Sqrt(dx*dx + dy*dy);
+      cov := radius - d + 0.5;
+      if (cov < 0) then cov := 0;
+      if (cov > 1) then cov := 1;
+      a := Cardinal(Round(255 * baseA * cov));
+      if white
+      then c := a
+      else c := 0;
+      px^ := (a shl 24) or (c shl 16) or (c shl 8) or c;
+      Inc(px);
+    end;
+
+  // Mini icons
+  files := TItemGroup.GetMemberFiles(AFolder);
+  n := Length(files);
+  if (n > 4) then n := 4;
+  if (n = 0)
+  then Exit;
+
+  pad := AIconSize div 10;
+  if (pad < 1) then pad := 1;
+  cell := (AIconSize - pad*3) div 2;
+  if (cell < 4)
+  then Exit;
+
+  bf.BlendOp := AC_SRC_OVER;
+  bf.BlendFlags := 0;
+  bf.SourceConstantAlpha := 255;
+  bf.AlphaFormat := AC_SRC_ALPHA;
+
+  dc := CreateCompatibleDC(0);
+  srcDc := CreateCompatibleDC(0);
+  old := SelectObject(dc, Result);
+  try
+    for i := 0 to n-1 do
+    begin
+      pidl := nil;
+      if (SHParseDisplayName(PChar(files[i]), nil, pidl, 0, PDWORD(nil)^) = S_OK)
+      then try
+        ico := LoadIconFromPidl(pidl, cell);
+        if (ico <> 0)
+        then try
+          if (GetObject(ico, SizeOf(bm), @bm) <> 0)
+          then begin
+            x := pad + (i mod 2) * (cell + pad);
+            y := pad + (i div 2) * (cell + pad);
+            oldSrc := SelectObject(srcDc, ico);
+            Winapi.Windows.AlphaBlend(dc, x, y, cell, cell, srcDc, 0, 0, bm.bmWidth, Abs(bm.bmHeight), bf);
+            SelectObject(srcDc, oldSrc);
+          end;
+        finally
+          DeleteObject(ico);
+        end;
+      finally
+        CoTaskMemFree(pidl);
+      end;
+    end;
+  finally
+    SelectObject(dc, old);
+    DeleteDC(srcDc);
+    DeleteDC(dc);
+  end;
+end;
+
+procedure TItemGroup.LoadIcon(const AIconSize: Integer);
+begin
+  DeleteObject(FBitmap);
+  FBitmap := CreateGroupIcon(FileName, AIconSize);
 end;
 
 { TItemSeparator }

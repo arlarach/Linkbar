@@ -43,6 +43,10 @@ const
 
   // Supported extentions
   ES_ARRAY: array[0..2] of string = ('.lnk', '.url', '.website');
+  // Icon groups: sub-folder named "<name>.group" inside the links folder
+  ES_GROUP = '.group';
+  // Everything shown on the bar (shortcuts + groups)
+  ES_ITEMS_ARRAY: array[0..3] of string = ('.lnk', '.url', '.website', ES_GROUP);
 
   CLK_LANG     = 'l';
   CLK_FILE     = 'f';

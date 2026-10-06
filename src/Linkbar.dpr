@@ -31,7 +31,8 @@ uses
   Linkbar.Graphics in 'Linkbar.Graphics.pas',
   Linkbar.Theme in 'Linkbar.Theme.pas',
   Linkbar.DarkTheme in 'Linkbar.DarkTheme.pas',
-  Linkbar.Settings in 'Linkbar.Settings.pas';
+  Linkbar.Settings in 'Linkbar.Settings.pas',
+  Linkbar.GroupForm in 'Linkbar.GroupForm.pas';
 
 {$R *.res}
 

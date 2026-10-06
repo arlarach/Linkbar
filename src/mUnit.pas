@@ -34,6 +34,7 @@ type
     N3: TMenuItem;
     imSortAlphabet: TMenuItem;
     imNewSeparator: TMenuItem;
+    imNewGroup: TMenuItem;
     imNew: TMenuItem;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
@@ -59,6 +60,7 @@ type
     procedure FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
     procedure FormResize(Sender: TObject);
     procedure imNewSeparatorClick(Sender: TObject);
+    procedure imNewGroupClick(Sender: TObject);
   private
     BitmapSelected: THBitmap;
     BitmapDropPosition: THBitmap;
@@ -173,6 +175,7 @@ type
     MonitorsWorkareaWoTaskbar: TDynRectArray;
     procedure DoClickItem(X, Y: Integer);
     procedure DoExecuteItem(const AIndex: Integer);
+    procedure ShowGroup(const AIndex: Integer);
     procedure DoRenameItem(const AIndex: Integer);
     procedure DoDelete(const AIndex: Integer);
     procedure DoPopupMenuItemExecute(const ACmd: Integer);
@@ -277,7 +280,7 @@ uses
   Winapi.ShellAPI,
   ExplorerMenu, Linkbar.Shell, Linkbar.Theme,
   Linkbar.OS, Linkbar.L10n, JumpLists.Form, JumpLists.Api_2, RenameDialog,
-  Linkbar.SettingsForm, Linkbar.Settings;
+  Linkbar.SettingsForm, Linkbar.Settings, Linkbar.GroupForm;
 
 const
   bf: TBlendFunction = (BlendOp: AC_SRC_OVER; BlendFlags: 0;
@@ -352,8 +355,8 @@ begin
   templist.CaseSensitive := False;
   templist.Sorted := False;
 
-  // Find supperted files in working directory
-  for ext in ES_ARRAY do
+  // Find supperted files (and groups) in working directory
+  for ext in ES_ITEMS_ARRAY do
   begin
     if ( FindFirst( WorkDir + '*' + ext, faAnyFile, sr) = 0 )
     then repeat
@@ -394,7 +397,7 @@ begin
       Items.Add(TItemSeparator.Create);
     end
     else begin
-      var item := TItemShortcut.Create;
+      var item := CreateItemForFile(fileName);
       if item.LoadFromFile(WorkDir + fileName)
       then Items.Add(item)
       else item.Free;
@@ -1007,6 +1010,7 @@ begin
   L10nControl(imNew,          'Menu.New');
   L10nControl(imNewShortcut,  'Menu.Shortcut');
   L10nControl(imNewSeparator, 'Menu.Separator');
+  L10nControl(imNewGroup,     'Menu.Group');
   L10nControl(imNewLinkbar,   'Menu.Linkbar');
   L10nControl(imOpenWorkdir,  'Menu.Open');
   L10nControl(imRemoveBar,    'Menu.Delete');
@@ -1380,7 +1384,25 @@ begin
   if not IsItemIndex(AIndex)
   then Exit;
 
-  Items[AIndex].DoExecute(Handle);
+  if (Items[AIndex] is TItemGroup)
+  then ShowGroup(AIndex)
+  else Items[AIndex].DoExecute(Handle);
+end;
+
+{ Show group content as a popup grid of icons }
+procedure TLinkbarWcl.ShowGroup(const AIndex: Integer);
+begin
+  const item = Items[AIndex];
+  var itemRect := item.Rect;
+  MapWindowPoints(Handle, HWND_DESKTOP, itemRect, 2);
+
+  var form := TFormGroup.CreateGroup(Self, Handle, item.FileName, item.Caption,
+    EnsureRange(IconSize, 32, 64));
+  ToolTip.Cancel;
+  form.OnDestroy := OnFormJumplistDestroy;
+  FLockHotIndex := True;
+  FLockAutoHide := True;
+  form.PopupAt(itemRect, Align);
 end;
 
 procedure TLinkbarWcl.DoClickItem(X, Y: Integer);
@@ -2392,6 +2414,23 @@ begin
   UpdateWindowSize;
 end;
 
+{ New empty group: sub-folder "<name>.group". The folder watcher adds it to the bar.
+  Drag shortcuts from the bar onto the group icon to move them inside. }
+procedure TLinkbarWcl.imNewGroupClick(Sender: TObject);
+var baseName, dirName: string;
+    n: Integer;
+begin
+  baseName := L10NFind('Menu.GroupDefaultName', 'Group');
+  dirName := WorkDir + baseName + ES_GROUP;
+  n := 2;
+  while DirectoryExists(dirName) or FileExists(dirName) do
+  begin
+    dirName := WorkDir + baseName + ' ' + IntToStr(n) + ES_GROUP;
+    Inc(n);
+  end;
+  ForceDirectories(dirName);
+end;
+
 procedure TLinkbarWcl.imOpenWorkdirClick(Sender: TObject);
 begin
   OpenDirectoryByName(WorkDir);
@@ -2731,14 +2770,14 @@ begin
   inherited;
   // Skip unsupported files
   ext := ExtractFileExt(AFileName);
-  if not MatchText(ext, ES_ARRAY) then Exit;
+  if not MatchText(ext, ES_ITEMS_ARRAY) then Exit;
 
   tmrUpdate.Enabled := False;
 
   case AAction of
   waAdded:
   begin
-    var item := TItemShortcut.Create;
+    var item := CreateItemForFile(AFileName);
     item.Hash := StrToHash(AFileName);
     item.FileName := WorkDir + AFileName;
     item.NeedLoad := True;

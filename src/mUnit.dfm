@@ -39,6 +39,11 @@ object LinkbarWcl: TLinkbarWcl
         GroupIndex = 3
         OnClick = imNewSeparatorClick
       end
+      object imNewGroup: TMenuItem
+        Caption = 'Group'
+        GroupIndex = 3
+        OnClick = imNewGroupClick
+      end
       object imNewLinkbar: TMenuItem
         Caption = 'Linkbar'
         GroupIndex = 3

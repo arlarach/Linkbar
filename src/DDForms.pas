@@ -425,7 +425,7 @@ begin
   FDirWatchDog := TDirectoryWatch.Create;
   FDirWatchDog.Directory := FWorkDir;
   FDirWatchDog.WatchSubTree := False;
-  FDirWatchDog.WatchOptions := [woFileName, woLastWrite];
+  FDirWatchDog.WatchOptions := [woFileName, woDirName, woLastWrite]; // woDirName: icon groups (*.group folders)
   FDirWatchDog.OnNotify := DirWatchChange;
   FDirWatchDog.OnError := DirWatchError;
   FDirWatchDog.Start;
