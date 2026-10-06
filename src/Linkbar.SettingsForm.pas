@@ -123,6 +123,10 @@ type
     pnlTooltipShow: TPanel;
     pnlModernStyle: TPanel;
     chbModernStyle: TCheckBox;
+    pnlOpacity: TPanel;
+    lblOpacity: TLabel;
+    lblOpacityValue: TLabel;
+    trbOpacity: TTrackBar;
     procedure FormMouseWheel(Sender: TObject; Shift: TShiftState;
       WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
     procedure linkEmailLinkClick(Sender: TObject; const Link: string;
@@ -139,6 +143,7 @@ type
     procedure edtBkgndColorKeyPress(Sender: TObject; var Key: Char);
     procedure edtBkgndColorChange(Sender: TObject);
     procedure imCopyClick(Sender: TObject);
+    procedure trbOpacityChange(Sender: TObject);
   protected
     procedure CreateParams(var Params: TCreateParams); override;
     procedure WMNCHitTest(var Message: TWMNCHitTest); message WM_NCHITTEST;
@@ -149,8 +154,11 @@ type
     FTextColor: Cardinal;
     edtHotKey: THotKeyEdit;
     FCanChanged: Boolean;
+    FOpacityUpdating: Boolean;
     procedure SetBackgroundColor(AValue: Cardinal);
     procedure ApplyDarkStyle;
+    procedure SyncOpacityFromColor;
+    procedure PreviewBackground;
     procedure SetTextColor(AValue: Cardinal);
     function ScaleDimension(const X: Integer): Integer;
     procedure L10n;
@@ -269,8 +277,13 @@ begin
   InitOffsetSize(pnlDummy5, pnlDummy4);
   // Color
   InitOffsetSize(pnlDummy33, pnlDummy5);
+  // Opacity (Windows 10+ only)
+  InitOffsetSize(pnlOpacity, pnlDummy33);
+  pnlOpacity.Visible := IsWindows10;
   // Always on top
-  InitOffsetSize(pnlDummy10, pnlDummy33);
+  if IsWindows10
+  then InitOffsetSize(pnlDummy10, pnlOpacity)
+  else InitOffsetSize(pnlDummy10, pnlDummy33);
 
   { OS-dependent options }
   //IsWindows7 := False; IsWindows8And8Dot1 := True; IsWindows10 := False;
@@ -404,6 +417,7 @@ begin
 
   BackgroundColor := FLinkbar.BackgroundColor;
   TextColor := FLinkbar.TextColor;
+  SyncOpacityFromColor;
 
   chbAeroGlass.Checked := FLinkbar.EnableAeroGlass;
 
@@ -489,6 +503,7 @@ begin
   L10nControl(lblItemsAlign,           'Properties.ItemsAlign');
   L10nControl(cbbItemsAlign,          ['Properties.Left', 'Properties.Center']);
   L10nControl(chbUseBkgndColor,        'Properties.BgColor');
+  L10nControl(lblOpacity,              'Properties.Opacity');
   L10nControl(chbStayOnTop,            'Properties.AlwaysOnTop');
 
   // Windows specific
@@ -556,6 +571,9 @@ procedure TFrmProperties.FormDestroy(Sender: TObject);
 begin
   FrmProperties := nil;
   FColorPicker.Free;
+  // Undo live preview if not applied (after Apply/OK this re-applies the saved values)
+  if IsWindows10
+  then ThemeSetWindowAccentPolicy10(FLinkbar.Handle, FLinkbar.TransparencyMode, FLinkbar.BackgroundColor);
   PostMessage(FLinkbar.Handle, LM_DOAUTOHIDE, 0, 0);
 end;
 
@@ -606,6 +624,10 @@ begin
   // Color additional options
   edtBkgndColor.Enabled := chbUseBkgndColor.Checked;
   btnBkgndColorEdit.Enabled := chbUseBkgndColor.Checked;
+
+  // Live preview when transparency mode changes
+  if (Sender = cbbTransparencyMode)
+  then PreviewBackground;
 
   // Autohide additional options
   ah := chbAutoHide.Checked;
@@ -729,7 +751,11 @@ end;
 procedure TFrmProperties.edtBkgndColorChange(Sender: TObject);
 begin
   if (Sender = edtBkgndColor)
-  then FBackgroundColor := Cardinal(StrToIntDef(HexDisplayPrefix + edtBkgndColor.Text, 0));
+  then begin
+    FBackgroundColor := Cardinal(StrToIntDef(HexDisplayPrefix + edtBkgndColor.Text, 0));
+    SyncOpacityFromColor;
+    PreviewBackground;
+  end;
 
   if (Sender = clbTextColor)
   then FTextColor := Cardinal(clbTextColor.Selected);
@@ -754,6 +780,56 @@ begin
     if (FColorPicker.ShowModal = mrOk)
     then BackgroundColor := FColorPicker.Color;
   end;
+end;
+
+{ Opacity slider position (0..100 %) from alpha byte of background color }
+procedure TFrmProperties.SyncOpacityFromColor;
+begin
+  if FOpacityUpdating
+  then Exit;
+  FOpacityUpdating := True;
+  try
+    trbOpacity.Position := Round((FBackgroundColor shr 24) * 100 / 255);
+    lblOpacityValue.Caption := IntToStr(trbOpacity.Position) + ' %';
+  finally
+    FOpacityUpdating := False;
+  end;
+end;
+
+{ Slider moved: update alpha byte, make sure the color is used and visible }
+procedure TFrmProperties.trbOpacityChange(Sender: TObject);
+var alpha: Cardinal;
+begin
+  lblOpacityValue.Caption := IntToStr(trbOpacity.Position) + ' %';
+  if FOpacityUpdating or (not FCanChanged)
+  then Exit;
+
+  FOpacityUpdating := True;
+  try
+    // Opacity needs custom background color
+    if not chbUseBkgndColor.Checked
+    then chbUseBkgndColor.Checked := True;
+    // Opaque mode ignores alpha: switch to Transparent
+    if (trbOpacity.Position < 100) and (cbbTransparencyMode.ItemIndex = 0)
+    then cbbTransparencyMode.ItemIndex := 1;
+
+    alpha := Cardinal(Round(trbOpacity.Position * 255 / 100));
+    BackgroundColor := (FBackgroundColor and $00FFFFFF) or (alpha shl 24);
+  finally
+    FOpacityUpdating := False;
+  end;
+  PreviewBackground;
+  Changed(Sender);
+end;
+
+{ Live preview of background color/opacity on the bar (not saved until Apply/OK) }
+procedure TFrmProperties.PreviewBackground;
+begin
+  if (not FCanChanged) or (not IsWindows10)
+     or (not chbUseBkgndColor.Checked)
+  then Exit;
+  ThemeSetWindowAccentPolicy10(FLinkbar.Handle,
+    TTransparencyMode(cbbTransparencyMode.ItemIndex), FBackgroundColor);
 end;
 
 procedure TFrmProperties.SetBackgroundColor(AValue: Cardinal);

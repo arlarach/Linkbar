@@ -270,6 +270,52 @@ object FrmProperties: TFrmProperties
           OnClick = Changed
         end
       end
+      object pnlOpacity: TPanel
+        Left = 8
+        Top = 146
+        Width = 373
+        Height = 22
+        Anchors = [akLeft, akTop, akRight]
+        BevelOuter = bvNone
+        ShowCaption = False
+        TabOrder = 10
+        object lblOpacity: TLabel
+          Left = 0
+          Top = 0
+          Width = 45
+          Height = 22
+          Align = alLeft
+          Caption = 'Opacity:'
+          Layout = tlCenter
+        end
+        object lblOpacityValue: TLabel
+          Left = 333
+          Top = 0
+          Width = 40
+          Height = 22
+          Align = alRight
+          Alignment = taRightJustify
+          AutoSize = False
+          Caption = '100 %'
+          Layout = tlCenter
+        end
+        object trbOpacity: TTrackBar
+          Left = 170
+          Top = 0
+          Width = 163
+          Height = 22
+          Align = alRight
+          Max = 100
+          PageSize = 10
+          Frequency = 10
+          Position = 100
+          ShowSelRange = False
+          TabOrder = 0
+          ThumbLength = 16
+          TickStyle = tsNone
+          OnChange = trbOpacityChange
+        end
+      end
       object pnlLightStyle: TPanel
         Left = 8
         Top = 214
