@@ -106,11 +106,8 @@ const
 
 type
 
-{$IFDEF VER300}
-  TLbStorageSeek = UInt64;
-{$ELSE}
-  TLbStorageSeek = Int64;
-{$IFEND}
+  // Same type as IStream.Seek 'libNewPosition' in Winapi.ActiveX (Int64 or UInt64 depending on Delphi version)
+  TLbStorageSeek = LargeUInt;
 
   // http://a-whiter.livejournal.com/1266.html
   IApplicationResolver = interface(IUnknown)

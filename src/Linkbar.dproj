@@ -3,7 +3,7 @@
         <ProjectGuid>{EA4CA9D4-F6DB-4C7E-8829-04CBFEC5C941}</ProjectGuid>
         <MainSource>Linkbar.dpr</MainSource>
         <Base>True</Base>
-        <Config Condition="'$(Config)'==''">Debug</Config>
+        <Config Condition="'$(Config)'==''">Release</Config>
         <AppType>Application</AppType>
         <FrameworkType>VCL</FrameworkType>
         <DCC_DCCCompiler>DCC32</DCC_DCCCompiler>
@@ -70,7 +70,7 @@
         <DCC_Namespace>Vcl;Vcl.Imaging;Vcl.Touch;Vcl.Samples;Vcl.Shell;System;Xml;Data;Datasnap;Web;Soap;Winapi;System.Win;$(DCC_Namespace)</DCC_Namespace>
         <VerInfo_MinorVer>6</VerInfo_MinorVer>
         <DCC_ImageBase>00400000</DCC_ImageBase>
-        <DCC_UsePackage>vcl;rtl;vclx;vclie;VclSmp;dss;vclactnband;vclshlctrls;TntUnicodeVcl_R70;$(DCC_UsePackage)</DCC_UsePackage>
+        <DCC_UsePackage>vcl;rtl;vclx;vclie;VclSmp;dss;vclactnband;vclshlctrls;$(DCC_UsePackage)</DCC_UsePackage>
         <DCC_ExeOutput>..\exe</DCC_ExeOutput>
         <DCC_UnitSearchPath>..\Components\GdiPlus;..\Components\DirWatch;..\Components\SpinEdit;..\Components\JumpList;..\Components\RenameDialog;..\Components\ColorPicker;..\components\NewBar;..\Components\L10n;..\Components\Hotkey;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
         <DCC_K>false</DCC_K>
@@ -99,7 +99,7 @@
         <DCC_LocalDebugSymbols>false</DCC_LocalDebugSymbols>
         <DCC_Define>RELEASE;$(DCC_Define)</DCC_Define>
         <DCC_DebugInformation>0</DCC_DebugInformation>
-        <PostBuildEvent><![CDATA[copy $(OUTPUTPATH) $(OUTPUTDIR)$(OUTPUTNAME)$(Platform).exe
+        <PostBuildEvent><![CDATA[copy /Y "$(OUTPUTPATH)" "$(OUTPUTDIR)$(OUTPUTNAME)$(Platform).exe"
 $(PostBuildEvent)]]></PostBuildEvent>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_1_Win32)'!=''">
@@ -116,7 +116,7 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCC_Define>DEBUG;$(DCC_Define)</DCC_Define>
         <DCC_Optimize>false</DCC_Optimize>
         <DCC_GenerateStackFrames>true</DCC_GenerateStackFrames>
-        <PostBuildEvent><![CDATA[copy $(OUTPUTPATH) $(OUTPUTDIR)$(OUTPUTNAME)$(Platform)D.exe
+        <PostBuildEvent><![CDATA[copy /Y "$(OUTPUTPATH)" "$(OUTPUTDIR)$(OUTPUTNAME)$(Platform)D.exe"
 $(PostBuildEvent)]]></PostBuildEvent>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_2_Win32)'!=''">

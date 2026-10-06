@@ -21,7 +21,7 @@ uses
   Linkbar.Consts,
   Linkbar.OS,
   mUnit in 'mUnit.pas',
-{$IFDEF DEBUG}
+{$IFDEF USE_JCL}
   Linkbar.ExceptionDialog,
 {$ENDIF}
   Linkbar.Newbar,
