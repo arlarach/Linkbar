@@ -176,6 +176,7 @@ type
     procedure DoClickItem(X, Y: Integer);
     procedure DoExecuteItem(const AIndex: Integer);
     procedure ShowGroup(const AIndex: Integer);
+    procedure RenameGroup(const AIndex: Integer);
     procedure DoRenameItem(const AIndex: Integer);
     procedure DoDelete(const AIndex: Integer);
     procedure DoPopupMenuItemExecute(const ACmd: Integer);
@@ -1418,12 +1419,60 @@ begin
   if not IsItemIndex(AIndex)
   then Exit;
 
+  // Groups: ask only the name, keep the ".group" suffix
+  if (Items[AIndex] is TItemGroup)
+  then begin
+    RenameGroup(AIndex);
+    Exit;
+  end;
+
   FLockAutoHide := True;
   dlg := TRenamingWCl.Create(Self);
   dlg.Pidl := Items[AIndex].Pidl;
   dlg.ShowModal;
   dlg.Free;
   FLockAutoHide := False;
+end;
+
+procedure TLinkbarWcl.RenameGroup(const AIndex: Integer);
+const InvalidChars: array[0..8] of Char = ('\', '/', ':', '*', '?', '"', '<', '>', '|');
+var newName, oldPath, newPath: string;
+    ch: Char;
+begin
+  oldPath := ExcludeTrailingPathDelimiter(Items[AIndex].FileName);
+  newName := Items[AIndex].Caption;
+
+  FLockAutoHide := True;
+  try
+    if not InputQuery(L10NFind('Group.RenameTitle', 'Rename group'),
+                      L10NFind('Group.RenamePrompt', 'Name:'), newName)
+    then Exit;
+  finally
+    FLockAutoHide := False;
+  end;
+
+  newName := Trim(newName);
+  if (newName = '') or SameText(newName, Items[AIndex].Caption)
+  then Exit;
+  for ch in InvalidChars do
+    if (Pos(ch, newName) > 0)
+    then begin
+      MessageDlg(L10NFind('Group.InvalidName', 'The name cannot contain: \ / : * ? " < > |'),
+        mtWarning, [mbOK], 0);
+      Exit;
+    end;
+
+  newPath := WorkDir + newName + ES_GROUP;
+  if DirectoryExists(newPath) or FileExists(newPath)
+  then begin
+    MessageDlg(L10NFind('Group.NameExists', 'A group with this name already exists.'),
+      mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  // The folder watcher updates the bar item (rename events)
+  if not RenameFile(oldPath, newPath)
+  then MessageDlg(SysErrorMessage(GetLastError), mtError, [mbOK], 0);
 end;
 
 procedure TLinkbarWcl.DoDelete(const AIndex: Integer);
@@ -1716,6 +1765,7 @@ begin
 
   if (FItemPopup = ITEM_NONE)
      or (shift) // show extended contextmenu for item with jumplist
+     or (Items[FItemPopup] is TItemGroup) // groups: menu with Rename/Delete, no jumplist
   then DoPopupMenu(pt, shift)
   else DoPopupJumplist(pt, shift);
 end;
