@@ -48,12 +48,14 @@ type
     FHandle: HWND;
     FBoundRect: TRect;
     FStayOnTop: Boolean;
+    FFloating: Boolean;   // dock mode: no reserved screen space
     // special form for autohide
     ahform: THiddenForm;
     FTaskbarCreated: DWORD;
     procedure SetAutoHide(AValue: boolean);
     procedure SetAlign(AValue: TPanelAlign);
     procedure SetStayOnTop(AValue: Boolean);
+    procedure SetFloating(AValue: Boolean);
     procedure AppBWndProc(var Msg: TMessage);
     function GetIsVertical: boolean;
   protected
@@ -73,6 +75,7 @@ type
     procedure AppBarFullScreenApp(AEnabled: Boolean);
   published
     property StayOnTop: Boolean read FStayOnTop write SetStayOnTop;
+    property Floating: Boolean read FFloating write SetFloating;
     property AutoHide: boolean read FAutoHide write SetAutoHide;
     property Align: TPanelAlign read FAlign write SetAlign default EPanelAlignTop;
     property QuerySizing: TQuerySizingEvent read FQuerySizing write FQuerySizing;
@@ -334,8 +337,21 @@ end;
 
 procedure TAccessBar.Loaded;
 begin
-  RegisterAppBar;
+  if not FFloating
+  then RegisterAppBar;
   AppBarQuerySetPos;
+end;
+
+{ Dock mode: the bar floats over windows and does not reserve screen space }
+procedure TAccessBar.SetFloating(AValue: Boolean);
+begin
+  if (AValue = FFloating)
+  then Exit;
+  FFloating := AValue;
+  if FFloating
+  then UnregisterAppBar
+  else if not FAutoHide
+  then RegisterAppBar;
 end;
 
 procedure TAccessBar.AppBarQuerySetPos;
@@ -354,7 +370,7 @@ begin
   rabd.uEdge := ScreenEdgeToEdge(FAlign);
   rabd.rc := Screen.Monitors[MonitorNum].BoundsRect;
 
-  if not AutoHide then
+  if not (AutoHide or FFloating) then
   // query the new position
   if SHAppBarMessage(ABM_QUERYPOS, rabd) = 0
   then raise Exception.Create(SysErrorMessage(GetLastError()));
@@ -387,7 +403,7 @@ begin
   end;
 
   // set the new size
-  if (not AutoHide)
+  if (not AutoHide) and (not FFloating)
      and (SHAppBarMessage(ABM_SETPOS, rabd) = 0)
   then raise Exception.Create(SysErrorMessage(GetLastError()));
 
@@ -463,7 +479,8 @@ begin
         if (AutoHide)
         then
           SetAlign(FAlign)
-        else begin
+        else if not FFloating
+        then begin
           UnregisterAppBar;
           RegisterAppBar;
         end;

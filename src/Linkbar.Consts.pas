@@ -114,6 +114,13 @@ const
   DEF_TOOLTIP_SHOW              = True;
   DEF_MODERN_STYLE              = False;
   DEF_SYS_WIDGETS               = False;
+  DEF_BAR_STYLE                 = 0;    // 0 = normal (screen edge), 1 = dock (Mac-like)
+  DEF_ZOOM                      = 100;  // magnification in %, 100 = off
+  DEF_DOCK_POS                  = 500;  // dock position along the edge, 0..1000 (500 = centered)
+  ZOOM_MIN                      = 100;
+  ZOOM_MAX                      = 200;
+  BAR_STYLE_NORMAL              = 0;
+  BAR_STYLE_DOCK                = 1;
   DEF_ICON_SIZE                 = 32;
   DEF_ISLIGHT                   = False;
   DEF_ITEM_ORDER                = EItemOrderLeftToRight;
@@ -154,6 +161,9 @@ const
   INI_TOOLTIP_SHOW              = 'tooltipshow';
   INI_MODERN_STYLE              = 'modernstyle';
   INI_SYS_WIDGETS               = 'syswidgets';
+  INI_BAR_STYLE                 = 'barstyle';
+  INI_ZOOM                      = 'zoom';
+  INI_DOCK_POS                  = 'dockpos';
   INI_ICON_SIZE                 = 'iconsize';
   INI_ISLIGHT                   = 'usestylecombined';
   INI_ITEM_ORDER                = 'itemorder';

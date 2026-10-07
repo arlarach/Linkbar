@@ -89,6 +89,17 @@ type
     FModernStyle: Boolean;
     FExtDragIcon: HBITMAP;
     FShowSysWidgets: Boolean;
+    FBarStyle: Integer;          // BAR_STYLE_NORMAL / BAR_STYLE_DOCK
+    FZoomPercent: Integer;       // magnification 100..200 (100 = off)
+    FZoomCursor: Integer;        // mouse position along the bar, -1 = none
+    FDockPos: Integer;           // dock position along the edge 0..1000
+    FDockSliding: Boolean;       // Ctrl+drag in progress
+    FSlideMoved: Boolean;
+    FSlideStartCursor: TPoint;
+    FSlideStartPos: TPoint;
+    FThumbForm: TForm;          // live thumbnails popup (Linkbar.ThumbForm)
+    FThumbIndex: Integer;
+    FForegroundAtMouseDown: HWND;
     FCpuLoad, FRamLoad: Integer;       // 0..100
     FPrevIdle, FPrevKernel, FPrevUser: UInt64;
     FExtDragIconSize: Integer;
@@ -144,12 +155,31 @@ type
     procedure SetLook(AValue: TLook);
     procedure SetModernStyle(AValue: Boolean);
     procedure SetShowSysWidgets(AValue: Boolean);
+    procedure SetBarStyle(AValue: Integer);
+    procedure SetZoomPercent(AValue: Integer);
+    function IsDock: Boolean;
+    function ZoomEnabled: Boolean;
+    function ZoomRoom: Integer;
+    function ZoomBefore: Boolean;
+    function ZoomIconSizeValue: Integer;
+    function DockPad: Integer;
+    function ItemsMargin: Integer;
+    procedure DockBounds(var AX, AY, AWidth, AHeight: Integer);
+    procedure ApplyDockRegion(const AWidth, AHeight: Integer);
+    procedure DrawItemsZoomed;
+    procedure RedrawZoom;
+    procedure SlideDock(const ACursor: TPoint);
+    procedure SaveDockPos;
     function SysWidgetLength(const AVertical: Boolean): Integer;
     function SysWidgetRect(const AWidth, AHeight: Integer): TRect;
     procedure SampleSysStats;
     procedure DrawSysWidgets(const ABitmap: THBitmap; const AWidth, AHeight: Integer);
     procedure RefreshSysWidgets;
     procedure UpdateRunningState;
+    procedure ThumbsHotChanged;
+    procedure ShowThumbs(const AIndex: Integer);
+    procedure CloseThumbs;
+    procedure OnThumbsDestroy(Sender: TObject);
     procedure DrawRunningMark(const ABitmap: THBitmap; const AItem: TItemBase; const ARect: TRect);
     procedure SetUseBkgndColor(AValue: Boolean);
     function GetAlign: TPanelAlign;
@@ -253,6 +283,8 @@ type
     property TooltipShow: Boolean read FTooltipShow write FTooltipShow;
     property ModernStyle: Boolean read FModernStyle write SetModernStyle;
     property ShowSysWidgets: Boolean read FShowSysWidgets write SetShowSysWidgets;
+    property BarStyle: Integer read FBarStyle write SetBarStyle;
+    property ZoomPercent: Integer read FZoomPercent write SetZoomPercent;
     property HotIndex: Integer read FHotIndex write SetHotIndex;
     property HotkeyInfo: THotkeyInfo read FHotkeyInfo write SetHotkeyInfo;
     property IconSize: Integer read FIconSize write SetIconSize;
@@ -296,7 +328,7 @@ uses
   Winapi.ShellAPI,
   ExplorerMenu, Linkbar.Shell, Linkbar.Theme,
   Linkbar.OS, Linkbar.L10n, JumpLists.Form, JumpLists.Api_2, RenameDialog,
-  Linkbar.SettingsForm, Linkbar.Settings, Linkbar.GroupForm;
+  Linkbar.SettingsForm, Linkbar.Settings, Linkbar.GroupForm, Linkbar.ThumbForm;
 
 const
   bf: TBlendFunction = (BlendOp: AC_SRC_OVER; BlendFlags: 0;
@@ -307,6 +339,7 @@ const
   TIMER_AUTO_HIDE = 16;
   TIMER_SYS_WIDGETS = 17;
   TIMER_RUNNING = 18;
+  TIMER_THUMBS = 19;
 
 function EnumWindowProcStopDirWatch(wnd: HWND; lParam: LPARAM): BOOL; stdcall;
 var
@@ -427,6 +460,7 @@ begin
   then Items.Sort;
 
   Items.IconSize := IconSize;
+  Items.ZoomIconSize := ZoomIconSizeValue;
 end;
 
 function TLinkbarWcl.GetAlign: TPanelAlign;
@@ -646,12 +680,21 @@ procedure TLinkbarWcl.DrawItems(const AWidth, AHeight: integer);
 begin
   Items.Sizes.Button := ButtonSize;
   Items.Sizes.Separator := SeparatorWidth;
-  Items.Sizes.Margin := FGripSize;
+  Items.Sizes.Margin := ItemsMargin;
+  Items.Sizes.ZoomRoom := ZoomRoom;
+  Items.Sizes.ZoomBefore := ZoomBefore;
   Items.Sizes.Reserved := SysWidgetLength(IsVertical(Align));
   Items.UpdateLines(IsVertical(Align), AWidth, AHeight);
 
   // Draw captions
   DrawCaption(BitmapPanel, ITEM_ALL);
+
+  // Magnification effect (Mac-like)
+  if ZoomEnabled and (FZoomCursor >= 0) and (Items.Lines.Count = 1)
+  then begin
+    DrawItemsZoomed;
+    Exit;
+  end;
 
   // Draw icons
   for var item in Items do
@@ -848,6 +891,10 @@ begin
   FTooltipShow          := settings.Read(INI_TOOLTIP_SHOW, DEF_TOOLTIP_SHOW);
   FModernStyle          := settings.Read(INI_MODERN_STYLE, DEF_MODERN_STYLE);
   FShowSysWidgets       := settings.Read(INI_SYS_WIDGETS, DEF_SYS_WIDGETS);
+  FBarStyle            := settings.Read(INI_BAR_STYLE, DEF_BAR_STYLE, BAR_STYLE_NORMAL, BAR_STYLE_DOCK);
+  FZoomPercent          := settings.Read(INI_ZOOM, DEF_ZOOM, ZOOM_MIN, ZOOM_MAX);
+  FZoomCursor           := -1;
+  FDockPos             := settings.Read(INI_DOCK_POS, DEF_DOCK_POS, 0, 1000);
   hki                   := settings.Read(INI_AUTOHIDE_HOTKEY, DEF_AUTOHIDE_HOTKEY);
   FIconSize             := settings.Read(INI_ICON_SIZE, DEF_ICON_SIZE, ICON_SIZE_MIN, ICON_SIZE_MAX);
   FIsLightStyle         := settings.Read(INI_ISLIGHT, DEF_ISLIGHT);
@@ -970,6 +1017,9 @@ begin
     settings.Write(INI_TOOLTIP_SHOW, FTooltipShow);
     settings.Write(INI_MODERN_STYLE, FModernStyle);
     settings.Write(INI_SYS_WIDGETS, FShowSysWidgets);
+    settings.Write(INI_BAR_STYLE, FBarStyle);
+    settings.Write(INI_ZOOM, FZoomPercent);
+    settings.Write(INI_DOCK_POS, FDockPos);
     // Save
     settings.Close;
   end;
@@ -1029,6 +1079,10 @@ begin
   oAppBar.QuerySizing := QuerySizingEvent;
   oAppBar.QuerySized := QuerySizedEvent;
   oAppBar.QueryAutoHide := QueryHideEvent;
+
+  // Dock mode: floating bar, no autohide
+  oAppBar.Floating := IsDock;
+  if IsDock then FAutoHide := False;
 
   if not AutoHide then oAppBar.Loaded
   else AutoHide := TRUE;
@@ -1276,6 +1330,23 @@ begin
   then Exit;
 
   FMousePosDown := Point(X, Y);
+  // window that was in front before clicking the bar (for minimize on click)
+  if (GetForegroundWindow <> Handle)
+  then FForegroundAtMouseDown := GetForegroundWindow;
+  CloseThumbs;
+
+  // Dock: Ctrl + drag slides it along the same screen edge
+  if IsDock and (Button = mbLeft)
+     and (ssCtrl in Shift) and not (ssShift in Shift)
+  then begin
+    FDockSliding := True;
+    FSlideMoved := False;
+    GetCursorPos(FSlideStartCursor);
+    FSlideStartPos := BoundsRect.TopLeft;
+    SetCapture(Handle);
+    ToolTip.Cancel;
+    Exit;
+  end;
 
   case Button of
     mbLeft:
@@ -1294,6 +1365,23 @@ var
 
 procedure TLinkbarWcl.FormMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Integer);
 begin
+  if FDockSliding
+  then begin
+    var p: TPoint;
+    GetCursorPos(p);
+    if (not FSlideMoved)
+       and (Abs(p.X - FSlideStartCursor.X) + Abs(p.Y - FSlideStartCursor.Y) > PANEL_DRAG_THRESHOLD)
+    then begin
+      FSlideMoved := True;
+      if IsVertical(Align)
+      then Screen.Cursor := crSizeNS
+      else Screen.Cursor := crSizeWE;
+    end;
+    if FSlideMoved
+    then SlideDock(p);
+    Exit;
+  end;
+
   if (X = prevX) and (Y = prevY)
   then Exit;
   prevX := X; prevY := Y;
@@ -1306,6 +1394,15 @@ begin
   if not FMouseLeftDown then
   begin
     HotIndex := ItemIndexByPoint( Point(X, Y), HotIndex );
+
+    // Magnification follows the mouse
+    if ZoomEnabled and (not FMouseDragLinkbar)
+    then begin
+      if IsVertical(Align)
+      then FZoomCursor := Y
+      else FZoomCursor := X;
+      RedrawZoom;
+    end;
   end;
 
   if FMouseLeftDown
@@ -1361,6 +1458,25 @@ begin
         DoAutoShow;
       end;
     end;
+    Exit;
+  end;
+
+  // End of Ctrl+drag of the dock
+  if FDockSliding and (Button = mbLeft)
+  then begin
+    FDockSliding := False;
+    ReleaseCapture;
+    Screen.Cursor := crDefault;
+    if FSlideMoved
+    then SaveDockPos
+    else if (ItemIndexByPoint(Point(X, Y)) = ITEM_NONE)
+    then begin
+      // Ctrl+click on an empty area: center the dock again
+      FDockPos := DEF_DOCK_POS;
+      TSettingsFile.Write(FSettingsFileName, INI_DOCK_POS, FDockPos);
+      oAppBar.AppBarPosChanged;
+    end
+    else DoClickItem(X, Y);
     Exit;
   end;
 
@@ -1443,6 +1559,10 @@ begin
 
   if (Items[AIndex] is TItemGroup)
   then ShowGroup(AIndex)
+  // Open program: bring it to the front / minimize / next window (like the taskbar)
+  else if Items[AIndex].Running
+          and ActivateProgram(Items[AIndex].TargetPath, FForegroundAtMouseDown)
+  then Exit
   else Items[AIndex].DoExecute(Handle);
 end;
 
@@ -1857,6 +1977,12 @@ end;
 
 procedure TLinkbarWcl.SetAutoHide(AValue: Boolean);
 begin
+  // Dock mode has no autohide
+  if IsDock and AValue
+  then begin
+    FAutoHide := False;
+    Exit;
+  end;
   oAppBar.AutoHide := AValue;
   FAutoHide := oAppBar.AutoHide;
 end;
@@ -1930,6 +2056,7 @@ begin
   if AValue = FIconSize then Exit;
   FIconSize := EnsureRange(AValue, ICON_SIZE_MIN, ICON_SIZE_MAX);
   Items.IconSize := FIconSize;
+  Items.ZoomIconSize := ZoomIconSizeValue;
 end;
 
 procedure TLinkbarWcl.SetIsLightStyle(AValue: Boolean);
@@ -1978,6 +2105,9 @@ begin
   if (FPressedIndex <> FHotIndex)
   then HotIndex := FPressedIndex;
 
+  if ZoomEnabled
+  then Exit; // no pressed effect over magnified icons
+
   DrawItem(BitmapPanel, FHotIndex, True, FPressedIndex <> ITEM_NONE);
   UpdateWindow;
 end;
@@ -1995,23 +2125,27 @@ begin
      or (AValue = FHotIndex)
   then Exit;
 
-  if (FHotIndex >= 0)
-  then begin // restore pred selected item
-    const r = Items[FHotIndex].Rect;
-    BitBlt(BitmapPanel.Dc, r.Left, r.Top, r.Width, r.Height, BitmapSelected.Dc, 0, 0, SRCCOPY);
+  if ZoomEnabled
+  then FHotIndex := AValue // magnification replaces the hover highlight
+  else begin
+    if (FHotIndex >= 0)
+    then begin // restore pred selected item
+      const r = Items[FHotIndex].Rect;
+      BitBlt(BitmapPanel.Dc, r.Left, r.Top, r.Width, r.Height, BitmapSelected.Dc, 0, 0, SRCCOPY);
+    end;
+
+    FHotIndex := AValue;
+
+    if (FHotIndex >= 0)
+    then begin // store current item
+      const r = Items[FHotIndex].Rect;
+      BitBlt(BitmapSelected.Dc, 0, 0, r.Width, r.Height, BitmapPanel.Dc, r.Left, r.Top, SRCCOPY);
+    end;
+
+    DrawItem(BitmapPanel, FHotIndex, True, False); // draw current selected item
+
+    UpdateWindow;
   end;
-
-  FHotIndex := AValue;
-
-  if (FHotIndex >= 0)
-  then begin // store current item
-    const r = Items[FHotIndex].Rect;
-    BitBlt(BitmapSelected.Dc, 0, 0, r.Width, r.Height, BitmapPanel.Dc, r.Left, r.Top, SRCCOPY);
-  end;
-
-  DrawItem(BitmapPanel, FHotIndex, True, False); // draw current selected item
-
-  UpdateWindow;
 
   // show hint
   if (TooltipShow)
@@ -2059,6 +2193,8 @@ begin
   else begin
     ToolTip.Cancel;
   end;
+
+  ThumbsHotChanged;
 end;
 
 procedure TLinkbarWcl.SetHotkeyInfo(AValue: THotkeyInfo);
@@ -2128,27 +2264,36 @@ procedure TLinkbarWcl.QuerySizingEvent(Sender: TObject; AVertical: Boolean; var 
 begin
   Items.Sizes.Button := ButtonSize;
   Items.Sizes.Separator := SeparatorWidth;
-  Items.Sizes.Margin := FGripSize;
+  Items.Sizes.Margin := ItemsMargin;
+  Items.Sizes.ZoomRoom := ZoomRoom;
+  Items.Sizes.ZoomBefore := ZoomBefore;
   Items.Sizes.Reserved := SysWidgetLength(AVertical);
   Items.UpdateLines(AVertical, AWidth, AHeight);
 
   if (AVertical)
-  then AWidth := ButtonSize.Width * Items.Lines.Count
-  else AHeight := ButtonSize.Height * Items.Lines.Count;
+  then AWidth := ButtonSize.Width * Items.Lines.Count + ZoomRoom
+  else AHeight := ButtonSize.Height * Items.Lines.Count + ZoomRoom;
 end;
 
 procedure TLinkbarWcl.QuerySizedEvent(Sender: TObject; const AX, AY, AWidth,
   AHeight: Integer);
 var r: TRect;
+    x, y, w, h: Integer;
 begin
-  FBeforeAutoHideBound := Bounds(AX, AY, AWidth, AHeight);
-  RecreateMainBitmap(AWidth, AHeight);
+  x := AX; y := AY; w := AWidth; h := AHeight;
+  // Dock mode: small floating bar centered on the edge
+  if IsDock
+  then DockBounds(x, y, w, h);
+
+  FBeforeAutoHideBound := Bounds(x, y, w, h);
+  RecreateMainBitmap(w, h);
 
   if (AutoHide and FAutoHiden)
   then r := FAfterAutoHideBound
   else r := FBeforeAutoHideBound;
 
   MoveWindow(Handle, r.Left, r.Top, r.Width, r.Height, False);
+  ApplyDockRegion(r.Width, r.Height);
   UpdateWindow(r);
 end;
 
@@ -2176,9 +2321,18 @@ procedure TLinkbarWcl.UpdateWindowSize;
 var
   t, l, w, h: Integer;
 begin
+  // Dock: its length depends on the content, recalculate position and size
+  if IsDock and Assigned(oAppBar)
+  then begin
+    oAppBar.AppBarPosChanged;
+    Exit;
+  end;
+
   Items.Sizes.Button := ButtonSize;
   Items.Sizes.Separator := SeparatorWidth;
-  Items.Sizes.Margin := FGripSize;
+  Items.Sizes.Margin := ItemsMargin;
+  Items.Sizes.ZoomRoom := ZoomRoom;
+  Items.Sizes.ZoomBefore := ZoomBefore;
   Items.Sizes.Reserved := SysWidgetLength(IsVertical(Align));
   Items.UpdateLines(IsVertical(Align), Width, Height);
 
@@ -2189,12 +2343,12 @@ begin
 
   if IsVertical(Align) then
   begin
-    w := ButtonSize.Width * Items.Lines.Count;
+    w := ButtonSize.Width * Items.Lines.Count + ZoomRoom;
     if (Align = EPanelAlignRight)
     then l := Left + Width - w;
   end else
   begin
-    h := ButtonSize.Height * Items.Lines.Count;
+    h := ButtonSize.Height * Items.Lines.Count + ZoomRoom;
     if (Align = EPanelAlignBottom)
     then t := Top + Height - h;
   end;
@@ -2361,6 +2515,9 @@ begin
         Exit;
       end;
     { Delayed auto show (timer) }
+    WM_MOUSEACTIVATE:
+      // remember the window in front before the bar gets activated
+      FForegroundAtMouseDown := GetForegroundWindow;
     WM_TIMER:
       begin
         case Msg.WParam of
@@ -2384,6 +2541,12 @@ begin
           TIMER_RUNNING:
             begin
               UpdateRunningState;
+              Exit;
+            end;
+          TIMER_THUMBS:
+            begin
+              KillTimer(Handle, TIMER_THUMBS);
+              ShowThumbs(FHotIndex);
               Exit;
             end;
         end;
@@ -2703,6 +2866,11 @@ end;
 procedure TLinkbarWcl.FormMouseLeave(Sender: TObject);
 begin
   HotIndex := -1;
+  if ZoomEnabled and (FZoomCursor >= 0)
+  then begin
+    FZoomCursor := -1;
+    RedrawZoom;
+  end;
   if (FAutoShowMode = EAutoShowModeMouseHover) or FCanAutoHide
   then DoDelayedAutoHide(TIMER_AUTO_HIDE_DELAY);
 end;
@@ -3141,7 +3309,7 @@ begin
   then begin
     var hot := FHotIndex;
     RecreateMainBitmap(BitmapPanel.Width, BitmapPanel.Height);
-    if IsItemIndex(hot)
+    if IsItemIndex(hot) and not ZoomEnabled
     then begin
       // refresh hover snapshot and highlight
       const r = Items[hot].Rect;
@@ -3180,6 +3348,373 @@ begin
   gp := TGPGraphics.Create(ABitmap.Dc);
   brush := TGPSolidBrush.Create(color);
   GPFillRoundRect(gp, brush, r, h div 2);
+end;
+
+{ ---------- Live thumbnails ---------- }
+
+{ Hot item changed: schedule the thumbnails for an open program }
+procedure TLinkbarWcl.ThumbsHotChanged;
+var delay: Integer;
+begin
+  KillTimer(Handle, TIMER_THUMBS);
+
+  // moved to another item: close the current preview
+  if Assigned(FThumbForm) and IsItemIndex(FHotIndex) and (FHotIndex <> FThumbIndex)
+  then CloseThumbs;
+
+  if IsItemIndex(FHotIndex)
+     and (not Assigned(FThumbForm))
+     and Items[FHotIndex].Running
+     and (Items[FHotIndex].TargetPath <> '')
+  then begin
+    delay := 500;
+    SetTimer(Handle, TIMER_THUMBS, delay, nil);
+  end;
+end;
+
+procedure TLinkbarWcl.ShowThumbs(const AIndex: Integer);
+var
+  wnds: TArray<HWND>;
+  r: TRect;
+  form: TFormThumbs;
+begin
+  if not IsItemIndex(AIndex)
+     or (not Items[AIndex].Running)
+     or FMouseLeftDown or IsDragDrop or FLockHotIndex or FAutoHiden
+     or Assigned(FThumbForm)
+  then Exit;
+
+  wnds := GetProgramWindows(Items[AIndex].TargetPath);
+  if (Length(wnds) = 0)
+  then Exit;
+
+  ToolTip.Cancel;
+  r := Items[AIndex].Rect;
+  MapWindowPoints(Handle, HWND_DESKTOP, r, 2);
+
+  form := TFormThumbs.CreateThumbs(Self, Handle, wnds, IsVertical(Align));
+  form.OnDestroy := OnThumbsDestroy;
+  FThumbForm := form;
+  FThumbIndex := AIndex;
+  form.PopupAt(r, Align);
+end;
+
+procedure TLinkbarWcl.CloseThumbs;
+begin
+  KillTimer(Handle, TIMER_THUMBS);
+  if Assigned(FThumbForm)
+  then begin
+    FThumbForm.OnDestroy := nil;
+    FThumbForm.Close;
+    FThumbForm := nil;
+  end;
+end;
+
+procedure TLinkbarWcl.OnThumbsDestroy(Sender: TObject);
+begin
+  if (FThumbForm = Sender)
+  then FThumbForm := nil;
+end;
+
+{ ---------- Dock mode and magnification ---------- }
+
+function TLinkbarWcl.IsDock: Boolean;
+begin
+  Result := (FBarStyle = BAR_STYLE_DOCK);
+end;
+
+function TLinkbarWcl.ZoomEnabled: Boolean;
+begin
+  Result := (FZoomPercent > 100);
+end;
+
+{ Extra thickness so magnified icons fit in the bar }
+function TLinkbarWcl.ZoomRoom: Integer;
+begin
+  if ZoomEnabled
+  then Result := MulDiv(IconSize, FZoomPercent - 100, 100)
+  else Result := 0;
+end;
+
+{ Icons stay on the screen edge and grow towards the screen center }
+function TLinkbarWcl.ZoomBefore: Boolean;
+begin
+  Result := (Align = EPanelAlignBottom) or (Align = EPanelAlignRight);
+end;
+
+function TLinkbarWcl.ZoomIconSizeValue: Integer;
+begin
+  if ZoomEnabled
+  then Result := MulDiv(IconSize, FZoomPercent, 100)
+  else Result := 0;
+end;
+
+{ Dock: free space at both ends so magnified end icons are not cut }
+function TLinkbarWcl.DockPad: Integer;
+begin
+  if not IsDock
+  then Exit(0);
+  if ZoomEnabled
+  then Result := MulDiv(Max(ButtonSize.cx, ButtonSize.cy), FZoomPercent - 100, 100)
+  else Result := ScaleDimension(4);
+end;
+
+function TLinkbarWcl.ItemsMargin: Integer;
+begin
+  Result := FGripSize + DockPad;
+end;
+
+{ Dock bounds: only as long as its content, centered, slightly away from the edge }
+procedure TLinkbarWcl.DockBounds(var AX, AY, AWidth, AHeight: Integer);
+var
+  wa: TRect;
+  len, gap, mon: Integer;
+  vertical: Boolean;
+begin
+  mon := EnsureRange(FMonitorNum, 0, Screen.MonitorCount - 1);
+  wa := Screen.Monitors[mon].WorkareaRect;
+  gap := ScaleDimension(6);
+  vertical := IsVertical(Align);
+
+  len := Items.LineWidth + 2 * ItemsMargin + SysWidgetLength(vertical);
+  if vertical
+  then begin
+    len := Min(len, wa.Height);
+    AHeight := len;
+    AY := wa.Top + MulDiv(wa.Height - len, FDockPos, 1000);
+    if (Align = EPanelAlignLeft)
+    then AX := wa.Left + gap
+    else AX := wa.Right - AWidth - gap;
+  end
+  else begin
+    len := Min(len, wa.Width);
+    AWidth := len;
+    AX := wa.Left + MulDiv(wa.Width - len, FDockPos, 1000);
+    if (Align = EPanelAlignTop)
+    then AY := wa.Top + gap
+    else AY := wa.Bottom - AHeight - gap;
+  end;
+end;
+
+{ Rounded corners for the dock, plain rectangle otherwise }
+procedure TLinkbarWcl.ApplyDockRegion(const AWidth, AHeight: Integer);
+var
+  rgn: HRGN;
+  d: Integer;
+begin
+  if IsDock
+  then begin
+    d := Min(ScaleDimension(28), Min(AWidth, AHeight));
+    rgn := CreateRoundRectRgn(0, 0, AWidth + 1, AHeight + 1, d, d);
+    SetWindowRgn(Handle, rgn, True); // the system owns rgn now
+  end
+  else SetWindowRgn(Handle, 0, True);
+end;
+
+{ Move the dock along its edge following the mouse (Ctrl+drag) }
+procedure TLinkbarWcl.SlideDock(const ACursor: TPoint);
+var
+  wa: TRect;
+  l, t: Integer;
+begin
+  wa := Screen.Monitors[EnsureRange(FMonitorNum, 0, Screen.MonitorCount - 1)].WorkareaRect;
+  l := FSlideStartPos.X;
+  t := FSlideStartPos.Y;
+  if IsVertical(Align)
+  then t := EnsureRange(t + ACursor.Y - FSlideStartCursor.Y, wa.Top, Max(wa.Top, wa.Bottom - Height))
+  else l := EnsureRange(l + ACursor.X - FSlideStartCursor.X, wa.Left, Max(wa.Left, wa.Right - Width));
+  SetWindowPos(Handle, 0, l, t, 0, 0, SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE);
+  FBeforeAutoHideBound := Bounds(l, t, Width, Height);
+end;
+
+{ Remember the dock position as a fraction of the free space (survives resolution changes) }
+procedure TLinkbarWcl.SaveDockPos;
+var
+  wa: TRect;
+  range, pos: Integer;
+begin
+  wa := Screen.Monitors[EnsureRange(FMonitorNum, 0, Screen.MonitorCount - 1)].WorkareaRect;
+  if IsVertical(Align)
+  then begin
+    range := wa.Height - Height;
+    pos := Top - wa.Top;
+  end
+  else begin
+    range := wa.Width - Width;
+    pos := Left - wa.Left;
+  end;
+  if (range > 0)
+  then FDockPos := EnsureRange(MulDiv(pos, 1000, range), 0, 1000)
+  else FDockPos := DEF_DOCK_POS;
+  TSettingsFile.Write(FSettingsFileName, INI_DOCK_POS, FDockPos);
+end;
+
+procedure TLinkbarWcl.SetBarStyle(AValue: Integer);
+begin
+  AValue := EnsureRange(AValue, BAR_STYLE_NORMAL, BAR_STYLE_DOCK);
+  if (AValue = FBarStyle)
+  then Exit;
+  FBarStyle := AValue;
+
+  if IsDock and AutoHide
+  then AutoHide := False;
+
+  if Assigned(oAppBar)
+  then begin
+    oAppBar.Floating := IsDock;
+    oAppBar.AppBarPosChanged;
+  end;
+  if not IsDock
+  then SetWindowRgn(Handle, 0, True);
+end;
+
+procedure TLinkbarWcl.SetZoomPercent(AValue: Integer);
+begin
+  AValue := EnsureRange(AValue, ZOOM_MIN, ZOOM_MAX);
+  if (AValue = FZoomPercent)
+  then Exit;
+  FZoomPercent := AValue;
+  FZoomCursor := -1;
+  Items.ZoomIconSize := ZoomIconSizeValue;
+  // the bar thickness changes
+  if Assigned(oAppBar)
+  then oAppBar.AppBarPosChanged
+  else UpdateWindowSize;
+end;
+
+procedure TLinkbarWcl.RedrawZoom;
+begin
+  if FAutoHiden or IsDragDrop
+     or (BitmapPanel.Width = 0) or (BitmapPanel.Height = 0)
+  then Exit;
+  RecreateMainBitmap(BitmapPanel.Width, BitmapPanel.Height);
+  UpdateWindow;
+end;
+
+{ Icons near the mouse grow (cosine falloff over ~2.5 slots), the row spreads
+  out around the mouse so the icon under it stays under it }
+procedure TLinkbarWcl.DrawItemsZoomed;
+const
+  RANGE = 2.5; // slots affected on each side
+var
+  vertical: Boolean;
+  z, d, f, shift, t, vis, cursor: Double;
+  n, i, k, slot, size, x, y: Integer;
+  scales, lens, starts: array of Double;
+  base, vr: TRect;
+  item: TItemBase;
+  baseStart, baseLen: Double;
+begin
+  vertical := IsVertical(Align);
+  z := FZoomPercent / 100;
+  n := Items.Count;
+  if (n = 0) then Exit;
+  if vertical then slot := ButtonSize.cy else slot := ButtonSize.cx;
+  if (slot <= 0) then Exit;
+  cursor := FZoomCursor;
+
+  SetLength(scales, n);
+  SetLength(lens, n);
+  SetLength(starts, n);
+
+  // scale and enlarged length of every item
+  for i := 0 to n-1 do
+  begin
+    base := Items[i].Rect;
+    if vertical
+    then begin baseStart := base.Top;  baseLen := base.Height; end
+    else begin baseStart := base.Left; baseLen := base.Width;  end;
+
+    if Items.IsSeparator(Items[i])
+    then scales[i] := 1
+    else begin
+      d := Abs(cursor - (baseStart + baseLen / 2)) / slot;
+      if (d < RANGE)
+      then f := (1 + Cos(Pi * d / RANGE)) / 2
+      else f := 0;
+      scales[i] := 1 + (z - 1) * f;
+    end;
+    lens[i] := baseLen * scales[i];
+  end;
+
+  // positions: keep the point under the mouse fixed
+  if vertical then vis := Items[0].Rect.Top else vis := Items[0].Rect.Left;
+  for i := 0 to n-1 do
+  begin
+    starts[i] := vis;
+    vis := vis + lens[i];
+  end;
+
+  k := -1;
+  for i := 0 to n-1 do
+  begin
+    base := Items[i].Rect;
+    if vertical
+    then begin baseStart := base.Top;  baseLen := base.Height; end
+    else begin baseStart := base.Left; baseLen := base.Width;  end;
+    if (cursor >= baseStart) and (cursor < baseStart + baseLen)
+    then begin
+      k := i;
+      Break;
+    end;
+  end;
+
+  if (k >= 0)
+  then begin
+    base := Items[k].Rect;
+    if vertical
+    then begin baseStart := base.Top;  baseLen := base.Height; end
+    else begin baseStart := base.Left; baseLen := base.Width;  end;
+    t := (cursor - baseStart) / baseLen;
+    shift := cursor - (starts[k] + t * lens[k]);
+  end
+  else begin
+    // mouse before the first item: grow to the right; after the last: to the left
+    if vertical
+    then begin
+      if (cursor < Items[0].Rect.Top) then shift := 0
+      else shift := Items[n-1].Rect.Bottom - (starts[n-1] + lens[n-1]);
+    end
+    else begin
+      if (cursor < Items[0].Rect.Left) then shift := 0
+      else shift := Items[n-1].Rect.Right - (starts[n-1] + lens[n-1]);
+    end;
+  end;
+
+  // draw
+  for i := 0 to n-1 do
+  begin
+    item := Items[i];
+    base := item.Rect;
+    if vertical
+    then vr := Rect(base.Left, Round(starts[i] + shift), base.Right, Round(starts[i] + shift + lens[i]))
+    else vr := Rect(Round(starts[i] + shift), base.Top, Round(starts[i] + shift + lens[i]), base.Bottom);
+
+    if Items.IsSeparator(item)
+    then begin
+      if (FSeparatorStyle <> ESeparatorStyleSpace)
+      then ThemeDrawSeparator(BitmapPanel, Align, vr);
+      Continue;
+    end;
+
+    size := Round(IconSize * scales[i]);
+    if vertical
+    then begin
+      y := vr.Top + (vr.Height - size) div 2;
+      if ZoomBefore
+      then x := base.Left + FIconOffset.X + IconSize - size   // right bar: grow to the left
+      else x := base.Left + FIconOffset.X;                    // left bar: grow to the right
+    end
+    else begin
+      x := vr.Left + (vr.Width - size) div 2;
+      if ZoomBefore
+      then y := base.Top + FIconOffset.Y + IconSize - size    // bottom bar: grow upwards
+      else y := base.Top + FIconOffset.Y;                     // top bar: grow downwards
+    end;
+
+    Items.DrawScaled(BitmapPanel.Dc, item, x, y, size);
+    DrawRunningMark(BitmapPanel, item, vr);
+  end;
 end;
 
 { ---------- CPU / RAM widgets ---------- }
@@ -3273,7 +3808,7 @@ const
   COLOR_HIGH: Cardinal = $FFEF4444; // red when > 85%
 var
   area, cell, bar, fill, tr: TRect;
-  i, value, pad, barW, barH, cellLen: Integer;
+  i, value, pad, barW, barH, cellLen, zoff: Integer;
   vertical: Boolean;
   gp: IGPGraphics;
   brushTrack, brushFill: IGPBrush;
@@ -3292,6 +3827,7 @@ begin
   vertical := IsVertical(Align);
   pad := ScaleDimension(4);
   barW := Max(3, ScaleDimension(5));
+  if ZoomBefore then zoff := ZoomRoom else zoff := 0;
   if vertical
   then cellLen := (area.Height - pad * 2) div SYSWIDGET_COUNT
   else cellLen := (area.Width - pad * 2) div SYSWIDGET_COUNT;
@@ -3320,8 +3856,8 @@ begin
 
       // Cell (only the button-height part of the first line is used)
       if vertical
-      then cell := Rect(area.Left, area.Top + pad + i * cellLen, area.Left + ButtonSize.cx, area.Top + pad + (i + 1) * cellLen)
-      else cell := Rect(area.Left + pad + i * cellLen, area.Top, area.Left + pad + (i + 1) * cellLen, area.Top + ButtonSize.cy);
+      then cell := Rect(area.Left + zoff, area.Top + pad + i * cellLen, area.Left + zoff + ButtonSize.cx, area.Top + pad + (i + 1) * cellLen)
+      else cell := Rect(area.Left + pad + i * cellLen, area.Top + zoff, area.Left + pad + (i + 1) * cellLen, area.Top + zoff + ButtonSize.cy);
 
       // Vertical bar (track + fill from the bottom)
       barH := Min(cell.Height - pad * 2, ScaleDimension(32));
@@ -3357,8 +3893,8 @@ begin
       else value := FRamLoad;
 
       if vertical
-      then cell := Rect(area.Left, area.Top + pad + i * cellLen, area.Left + ButtonSize.cx, area.Top + pad + (i + 1) * cellLen)
-      else cell := Rect(area.Left + pad + i * cellLen, area.Top, area.Left + pad + (i + 1) * cellLen, area.Top + ButtonSize.cy);
+      then cell := Rect(area.Left + zoff, area.Top + pad + i * cellLen, area.Left + zoff + ButtonSize.cx, area.Top + pad + (i + 1) * cellLen)
+      else cell := Rect(area.Left + pad + i * cellLen, area.Top + zoff, area.Left + pad + (i + 1) * cellLen, area.Top + zoff + ButtonSize.cy);
       barH := Min(cell.Height - pad * 2, ScaleDimension(32));
       bar := Bounds(cell.Left + pad, cell.Top + (cell.Height - barH) div 2, barW, barH);
 

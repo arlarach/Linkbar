@@ -22,6 +22,7 @@ type
   private
     FKind: TKind;
     FBitmap: HBITMAP;                                                           // Shortcut icon
+    FBitmapZoom: HBITMAP;                                                       // Bigger icon for the magnification effect
     Shield: Boolean;                                                            // Have shild overlay
     BitBucket: Boolean;                                                         // Is bitbucket
   public
@@ -36,6 +37,7 @@ type
   public
     property Kind: TKind read FKind;
     property Bitmap: HBITMAP read FBitmap;
+    property BitmapZoom: HBITMAP read FBitmapZoom;
   public
     constructor Create; virtual;
     destructor Destroy; override;
@@ -43,6 +45,8 @@ type
     procedure DoPopupMenu(AHandle: HWND; const APoint: TPoint; AShift: Boolean = False; ASubMenu: HMENU = 0); virtual;
     function LoadFromFile(const AFileName: string): Boolean; virtual;
     procedure LoadIcon(const AIconSize: Integer); virtual;
+    procedure LoadZoomIcon(const AIconSize: Integer); virtual;
+    procedure FreeZoomIcon;
     function GetDropPart(const APoint: TPoint; const AVertical: Boolean; const ASideOnly: Boolean = False): Integer; virtual;
   end;
 
@@ -55,6 +59,7 @@ type
     procedure DoPopupMenu(AHandle: HWND; const APoint: TPoint; AShift: Boolean = False; ASubMenu: HMENU = 0); override;
     function LoadFromFile(const AFileName: string): Boolean; override;
     procedure LoadIcon(const AIconSize: Integer); override;
+    procedure LoadZoomIcon(const AIconSize: Integer); override;
     function GetDropPart(const APoint: TPoint; const AVertical: Boolean; const ASideOnly: Boolean = False): Integer; override;
   end;
 
@@ -67,6 +72,7 @@ type
     class function GetMemberFiles(const AFolder: string): TArray<string>; static;
     function LoadFromFile(const AFileName: string): Boolean; override;
     procedure LoadIcon(const AIconSize: Integer); override;
+    procedure LoadZoomIcon(const AIconSize: Integer); override;
   end;
 
   TItemSeparator = class(TItemBase)
@@ -86,6 +92,8 @@ type
     Separator: Integer;
     Margin: Integer;
     Reserved: Integer; // space kept free at the end of the bar (CPU/RAM widgets)
+    ZoomRoom: Integer;    // extra thickness for the magnification effect
+    ZoomBefore: Boolean;  // the extra thickness is before the items (bottom/right bars)
   end;
 
   TLBItemList = class(TObjectList<TItemBase>)
@@ -95,8 +103,10 @@ type
     BitmapBitBucket: HBITMAP;                                                     // <desktop>\Recycle Bin icon
 {$endif}
     FIconSize: Integer;
+    FZoomIconSize: Integer;
     FLineWidth: Integer;
     procedure SetIconSize(const AValue: Integer);
+    procedure SetZoomIconSize(const AValue: Integer);
     procedure QuickSort(L, R: Integer);
   public
     Lines: TList<Integer>;
@@ -105,6 +115,7 @@ type
     constructor Create;
     destructor Destroy; override;
     procedure Draw(AHdc: HDC;  const AItem: TItemBase; AX, AY: Integer);
+    procedure DrawScaled(AHdc: HDC; const AItem: TItemBase; AX, AY, ASize: Integer);
     procedure LoadIcon(const AItem: TItemBase); inline;
     procedure BitBucketUpdateIcon;
     procedure Sort;
@@ -112,6 +123,7 @@ type
     function GetLineIndex(const AItemIndex: Integer): Integer;
   public
     property IconSize: Integer read FIconSize write SetIconSize;
+    property ZoomIconSize: Integer read FZoomIconSize write SetZoomIconSize; // 0 = no zoom icons
     property LineWidth: Integer read FLineWidth;
   public
     class function IsSeparator(const AItem: TItemBase): Boolean; inline;
@@ -121,13 +133,20 @@ type
   function CreateItemForFile(const AFileName: string): TItemShortcut;
   { Lower-case paths of programs that have a visible top-level window }
   procedure CollectRunningExePaths(AList: TStringList);
+  { Taskbar-like top-level windows of a program (stable order) }
+  function GetProgramWindows(const AExePath: string): TArray<HWND>;
+  { Bring a window to the front (restores it if minimized) }
+  procedure SwitchToWindow(AWnd: HWND);
+  { Click on an open program: activate it, minimize it if it was already in
+    front (APrevForeground), or cycle through its windows. False = no window }
+  function ActivateProgram(const AExePath: string; APrevForeground: HWND): Boolean;
 
 
 implementation
 
 uses
   Winapi.ActiveX, Winapi.ShellAPI, Winapi.KnownFolders,
-  System.Win.ComObj, System.Types, System.Math,
+  System.Win.ComObj, System.Types, System.Math, Winapi.Dwmapi,
   Linkbar.OS, Linkbar.Consts, Linkbar.Shell, ExplorerMenu;
 
 var FKnownFolderManager: IKnownFolderManager;
@@ -321,7 +340,19 @@ destructor TItemBase.Destroy;
 begin
   CoTaskMemFree(Pidl);
   DeleteObject(FBitmap);
+  FreeZoomIcon;
   inherited;
+end;
+
+procedure TItemBase.LoadZoomIcon(const AIconSize: Integer);
+begin
+end;
+
+procedure TItemBase.FreeZoomIcon;
+begin
+  if (FBitmapZoom <> 0)
+  then DeleteObject(FBitmapZoom);
+  FBitmapZoom := 0;
 end;
 
 procedure TItemBase.DoExecute(AHandle: HWND);
@@ -402,6 +433,12 @@ begin
   then Exit;
 {$endif}
   FBitmap := LoadIconFromPidl(Pidl, AIconSize);
+end;
+
+procedure TItemShortcut.LoadZoomIcon(const AIconSize: Integer);
+begin
+  FreeZoomIcon;
+  FBitmapZoom := LoadIconFromPidl(Pidl, AIconSize);
 end;
 
 procedure TItemShortcut.DoExecute(AHandle: HWND);
@@ -488,6 +525,16 @@ begin
         FindClose(sr);
       end;
     end;
+    // Sub-groups (folders "<name>.group")
+    if (FindFirst(dir + '*' + ES_GROUP, faDirectory, sr) = 0)
+    then begin
+      repeat
+        if ((sr.Attr and faDirectory) <> 0)
+        then found.Add(sr.Name);
+      until (FindNext(sr) <> 0);
+      FindClose(sr);
+    end;
+
     found.Sort;
 
     // Custom order first
@@ -646,6 +693,12 @@ begin
   end;
 end;
 
+procedure TItemGroup.LoadZoomIcon(const AIconSize: Integer);
+begin
+  FreeZoomIcon;
+  FBitmapZoom := CreateGroupIcon(FileName, AIconSize);
+end;
+
 procedure TItemGroup.LoadIcon(const AIconSize: Integer);
 var
   files: TArray<string>;
@@ -680,51 +733,159 @@ function LB_QueryFullProcessImageName(hProcess: THandle; dwFlags: DWORD;
   lpExeName: PWideChar; var lpdwSize: DWORD): BOOL; stdcall;
   external kernel32 name 'QueryFullProcessImageNameW';
 
-{ Collect process ids of windows that would appear on the taskbar }
-function EnumTaskWindowsProc(wnd: HWND; lParam: LPARAM): BOOL; stdcall;
-var pid: DWORD;
+procedure LB_SwitchToThisWindow(hWnd: HWND; fAltTab: BOOL); stdcall;
+  external user32 name 'SwitchToThisWindow';
+
+{ Window that would appear on the taskbar }
+function IsTaskWindow(wnd: HWND): Boolean;
+const LB_DWMWA_CLOAKED = 14;
+var cloaked: DWORD;
 begin
-  Result := True;
-  if not IsWindowVisible(wnd) then Exit;
-  if (GetWindow(wnd, GW_OWNER) <> 0) then Exit;
-  if ((GetWindowLongPtr(wnd, GWL_EXSTYLE) and WS_EX_TOOLWINDOW) <> 0) then Exit;
-  pid := 0;
-  GetWindowThreadProcessId(wnd, pid);
-  if (pid <> 0)
-  then TList<DWORD>(Pointer(lParam)).Add(pid);
+  Result := IsWindowVisible(wnd)
+    and (GetWindow(wnd, GW_OWNER) = 0)
+    and ((GetWindowLongPtr(wnd, GWL_EXSTYLE) and WS_EX_TOOLWINDOW) = 0);
+  if Result and IsWindows8OrAbove
+  then begin
+    // hidden UWP windows / other virtual desktops
+    cloaked := 0;
+    if Succeeded(DwmGetWindowAttribute(wnd, LB_DWMWA_CLOAKED, @cloaked, SizeOf(cloaked)))
+       and (cloaked <> 0)
+    then Result := False;
+  end;
 end;
 
-procedure CollectRunningExePaths(AList: TStringList);
+function EnumTaskWindowsProc(wnd: HWND; lParam: LPARAM): BOOL; stdcall;
+begin
+  Result := True;
+  if IsTaskWindow(wnd)
+  then TList<HWND>(Pointer(lParam)).Add(wnd);
+end;
+
+function GetTaskWindows: TArray<HWND>;
+var list: TList<HWND>;
+begin
+  list := TList<HWND>.Create;
+  try
+    EnumWindows(@EnumTaskWindowsProc, LPARAM(Pointer(list)));
+    Result := list.ToArray;
+  finally
+    list.Free;
+  end;
+end;
+
+function GetProcessExePath(APid: DWORD): string;
 var
-  pids: TList<DWORD>;
-  pid: DWORD;
   h: THandle;
   buf: array[0..MAX_PATH] of Char;
   size: DWORD;
+begin
+  Result := '';
+  h := OpenProcess(LB_PROCESS_QUERY_LIMITED_INFORMATION, False, APid);
+  if (h <> 0)
+  then try
+    size := MAX_PATH;
+    if LB_QueryFullProcessImageName(h, 0, buf, size)
+    then Result := AnsiLowerCase(Copy(string(buf), 1, size));
+  finally
+    CloseHandle(h);
+  end;
+end;
+
+{ Calls AProc for every task window with the exe path of its process }
+type
+  TWindowExeProc = reference to procedure(AWnd: HWND; const AExePath: string);
+
+procedure ForEachTaskWindow(const AProc: TWindowExeProc);
+var
+  cache: TDictionary<DWORD, string>;
+  wnd: HWND;
+  pid: DWORD;
+  path: string;
+begin
+  cache := TDictionary<DWORD, string>.Create;
+  try
+    for wnd in GetTaskWindows do
+    begin
+      pid := 0;
+      GetWindowThreadProcessId(wnd, pid);
+      if (pid = 0) then Continue;
+      if not cache.TryGetValue(pid, path)
+      then begin
+        path := GetProcessExePath(pid);
+        cache.Add(pid, path);
+      end;
+      if (path <> '')
+      then AProc(wnd, path);
+    end;
+  finally
+    cache.Free;
+  end;
+end;
+
+procedure CollectRunningExePaths(AList: TStringList);
+var list: TStringList;
 begin
   AList.Clear;
   AList.Sorted := True;
   AList.Duplicates := dupIgnore;
   AList.CaseSensitive := False;
-
-  pids := TList<DWORD>.Create;
-  try
-    EnumWindows(@EnumTaskWindowsProc, LPARAM(Pointer(pids)));
-    for pid in pids do
+  list := AList;
+  ForEachTaskWindow(
+    procedure(AWnd: HWND; const AExePath: string)
     begin
-      h := OpenProcess(LB_PROCESS_QUERY_LIMITED_INFORMATION, False, pid);
-      if (h <> 0)
-      then try
-        size := MAX_PATH;
-        if LB_QueryFullProcessImageName(h, 0, buf, size)
-        then AList.Add(AnsiLowerCase(Copy(string(buf), 1, size)));
-      finally
-        CloseHandle(h);
-      end;
-    end;
+      list.Add(AExePath);
+    end);
+end;
+
+function GetProgramWindows(const AExePath: string): TArray<HWND>;
+var list: TList<HWND>;
+begin
+  list := TList<HWND>.Create;
+  try
+    ForEachTaskWindow(
+      procedure(AWnd: HWND; const APath: string)
+      begin
+        if SameText(APath, AExePath)
+        then list.Add(AWnd);
+      end);
+    list.Sort; // stable order by handle, so repeated clicks cycle
+    Result := list.ToArray;
   finally
-    pids.Free;
+    list.Free;
   end;
+end;
+
+procedure SwitchToWindow(AWnd: HWND);
+begin
+  if IsIconic(AWnd)
+  then ShowWindow(AWnd, SW_RESTORE);
+  LB_SwitchToThisWindow(AWnd, True);
+  SetForegroundWindow(AWnd);
+end;
+
+function ActivateProgram(const AExePath: string; APrevForeground: HWND): Boolean;
+var
+  wnds: TArray<HWND>;
+  i, idx: Integer;
+begin
+  Result := False;
+  if (AExePath = '')
+  then Exit;
+  wnds := GetProgramWindows(AExePath);
+  if (Length(wnds) = 0)
+  then Exit;
+  Result := True;
+
+  idx := -1;
+  for i := 0 to High(wnds) do
+    if (wnds[i] = APrevForeground)
+    then idx := i;
+
+  if (idx < 0)
+  then SwitchToWindow(wnds[0])                         // not in front: activate
+  else if (Length(wnds) = 1)
+  then ShowWindow(wnds[0], SW_MINIMIZE)                // already in front: minimize
+  else SwitchToWindow(wnds[(idx + 1) mod Length(wnds)]); // several: next one
 end;
 
 { TItemSeparator }
@@ -822,11 +983,13 @@ begin
   if (AVertical)
   then begin
     x := 0;
+    if Sizes.ZoomBefore then x := Sizes.ZoomRoom;
     y := margin;
   end else
   begin
     x := margin;
     y := 0;
+    if Sizes.ZoomBefore then y := Sizes.ZoomRoom;
   end;
 
   count := 0;
@@ -994,6 +1157,51 @@ end;
 procedure TLBItemList.LoadIcon(const AItem: TItemBase);
 begin
   AItem.LoadIcon(FIconSize);
+  if (FZoomIconSize > FIconSize)
+  then AItem.LoadZoomIcon(FZoomIconSize)
+  else AItem.FreeZoomIcon;
+end;
+
+procedure TLBItemList.SetZoomIconSize(const AValue: Integer);
+begin
+  if (FZoomIconSize = AValue)
+  then Exit;
+  FZoomIconSize := AValue;
+  for var item in Self do
+  begin
+    if (FZoomIconSize > FIconSize)
+    then item.LoadZoomIcon(FZoomIconSize)
+    else item.FreeZoomIcon;
+  end;
+end;
+
+{ Draw the icon at any size (magnification). Uses the big icon when enlarged }
+procedure TLBItemList.DrawScaled(AHdc: HDC; const AItem: TItemBase; AX, AY, ASize: Integer);
+const bf: TBlendFunction = (BlendOp: AC_SRC_OVER; BlendFlags: 0; SourceConstantAlpha: 255; AlphaFormat: AC_SRC_ALPHA);
+var
+  src: HBITMAP;
+  bm: Winapi.Windows.TBitmap;
+  dc: HDC;
+  bmp0: HGDIOBJ;
+begin
+  if (ASize <= FIconSize) or (AItem.FBitmapZoom = 0)
+  then src := AItem.FBitmap
+  else src := AItem.FBitmapZoom;
+  if (src = 0) or (GetObject(src, SizeOf(bm), @bm) = 0)
+  then Exit;
+
+  dc := CreateCompatibleDC(AHdc);
+  bmp0 := SelectObject(dc, src);
+  Winapi.Windows.AlphaBlend(AHdc, AX, AY, ASize, ASize, dc, 0, 0, bm.bmWidth, Abs(bm.bmHeight), bf);
+  SelectObject(dc, bmp0);
+
+  if AItem.Shield and (BitmapShield <> 0)
+  then begin
+    bmp0 := SelectObject(dc, BitmapShield);
+    Winapi.Windows.AlphaBlend(AHdc, AX, AY, ASize, ASize, dc, 0, 0, FIconSize, FIconSize, bf);
+    SelectObject(dc, bmp0);
+  end;
+  DeleteDC(dc);
 end;
 
 procedure TLBItemList.Draw(AHdc: HDC; const AItem: TItemBase; AX, AY: Integer);

@@ -31,6 +31,10 @@ type
     FDownPt: TPoint;
     FDragging: Boolean;       // reordering inside the window
     FDropIndex: Integer;      // insert position while reordering
+    FStack: TStringList;      // parent groups (navigation into sub-groups): folder=caption
+    FAnchorRect: TRect;
+    FAlign: TPanelAlign;
+    FModalOpen: Boolean;      // a dialog of ours is open: don't close on deactivate
     FOwnerWnd: HWND;
     FGroupCaption: string;
     FIconSize: Integer;
@@ -54,6 +58,13 @@ type
     procedure SaveOrder;
     function DropIndexAt(const APoint: TPoint): Integer;
     procedure DoSortAlphabetically(Sender: TObject);
+    procedure DoNewGroup(Sender: TObject);
+    procedure DoRenameSubGroup(Sender: TObject);
+    procedure DoOpenFolder(Sender: TObject);
+    procedure Reposition;
+    procedure NavigateInto(const AIndex: Integer);
+    procedure NavigateBack;
+    procedure Reload;
   protected
     procedure CreateParams(var Params: TCreateParams); override;
     procedure WndProc(var Message: TMessage); override;
@@ -74,7 +85,7 @@ type
 implementation
 
 uses
-  System.Math, GdiPlus, Vcl.Menus,
+  System.Math, GdiPlus, Vcl.Menus, Vcl.Dialogs, Winapi.ShellAPI,
   ExplorerMenu, Linkbar.Theme, Linkbar.OS, Linkbar.L10n;
 
 { TFormGroup }
@@ -117,6 +128,7 @@ begin
   Color := FBgColor;
 
   FItems := TObjectList<TItemShortcut>.Create(True);
+  FStack := TStringList.Create;
   LoadItems;
   CalcLayout;
 end;
@@ -129,7 +141,7 @@ begin
   FItems.Clear;
   for fileName in TItemGroup.GetMemberFiles(FFolder) do
   begin
-    item := TItemShortcut.Create;
+    item := CreateItemForFile(fileName); // TItemGroup for sub-groups
     if item.LoadFromFile(fileName)
     then begin
       item.LoadIcon(FIconSize);
@@ -151,7 +163,17 @@ begin
   try
     CollectRunningExePaths(paths);
     for item in FItems do
+    begin
       item.Running := (item.TargetPath <> '') and paths.Find(item.TargetPath, idx);
+      if (not item.Running) and (item is TItemGroup)
+      then
+        for var t in TItemGroup(item).MemberTargets do
+          if (t <> '') and paths.Find(t, idx)
+          then begin
+            item.Running := True;
+            Break;
+          end;
+    end;
   finally
     paths.Free;
   end;
@@ -177,11 +199,94 @@ begin
   end;
 end;
 
+procedure TFormGroup.Reload;
+begin
+  LoadItems;
+  CalcLayout;
+  Reposition;
+  Invalidate;
+end;
+
+procedure TFormGroup.NavigateInto(const AIndex: Integer);
+begin
+  FStack.Add(FFolder + '=' + FGroupCaption);
+  FFolder := ExcludeTrailingPathDelimiter(FItems[AIndex].FileName);
+  FGroupCaption := FItems[AIndex].Caption;
+  FHot := -1;
+  Reload;
+end;
+
+procedure TFormGroup.NavigateBack;
+begin
+  if (FStack.Count = 0)
+  then Exit;
+  FFolder := FStack.Names[FStack.Count - 1];
+  FGroupCaption := FStack.ValueFromIndex[FStack.Count - 1];
+  FStack.Delete(FStack.Count - 1);
+  FHot := -1;
+  Reload;
+end;
+
+{ New sub-group inside the current group }
+procedure TFormGroup.DoNewGroup(Sender: TObject);
+var baseName, dirName: string;
+    n: Integer;
+begin
+  baseName := L10NFind('Menu.GroupDefaultName', 'Group');
+  dirName := IncludeTrailingPathDelimiter(FFolder) + baseName + ES_GROUP;
+  n := 2;
+  while DirectoryExists(dirName) or FileExists(dirName) do
+  begin
+    dirName := IncludeTrailingPathDelimiter(FFolder) + baseName + ' ' + IntToStr(n) + ES_GROUP;
+    Inc(n);
+  end;
+  ForceDirectories(dirName);
+  Reload;
+end;
+
+{ Rename a sub-group (Tag of the menu item = index) }
+procedure TFormGroup.DoRenameSubGroup(Sender: TObject);
+const InvalidChars = '\/:*?"<>|';
+var i: Integer;
+    newName, newPath: string;
+    ch: Char;
+begin
+  i := TMenuItem(Sender).Tag;
+  if (i < 0) or (i >= FItems.Count) then Exit;
+  newName := FItems[i].Caption;
+  FModalOpen := True;
+  try
+    if not InputQuery(L10NFind('Group.RenameTitle', 'Rename group'),
+                      L10NFind('Group.RenamePrompt', 'Name:'), newName)
+    then Exit;
+  finally
+    FModalOpen := False;
+    SetForegroundWindow(Handle);
+  end;
+  newName := Trim(newName);
+  if (newName = '') then Exit;
+  for ch in InvalidChars do
+    if (Pos(ch, newName) > 0) then Exit;
+  newPath := IncludeTrailingPathDelimiter(FFolder) + newName + ES_GROUP;
+  if DirectoryExists(newPath) or FileExists(newPath) then Exit;
+  if RenameFile(ExcludeTrailingPathDelimiter(FItems[i].FileName), newPath)
+  then Reload;
+end;
+
+procedure TFormGroup.DoOpenFolder(Sender: TObject);
+var i: Integer;
+begin
+  i := TMenuItem(Sender).Tag;
+  if (i >= 0) and (i < FItems.Count)
+  then ShellExecute(0, 'open', PChar(FItems[i].FileName), nil, nil, SW_SHOWNORMAL)
+  else ShellExecute(0, 'open', PChar(FFolder), nil, nil, SW_SHOWNORMAL);
+  Close;
+end;
+
 procedure TFormGroup.DoSortAlphabetically(Sender: TObject);
 begin
   System.SysUtils.DeleteFile(IncludeTrailingPathDelimiter(FFolder) + LINKSLIST_FILE_NAME);
-  LoadItems;
-  Invalidate;
+  Reload;
 end;
 
 { Insert position for reordering: before the cell under the point (left half)
@@ -206,6 +311,7 @@ end;
 
 destructor TFormGroup.Destroy;
 begin
+  FStack.Free;
   FItems.Free;
   inherited;
 end;
@@ -334,7 +440,10 @@ begin
   // Title
   Canvas.Font.Style := [fsBold];
   r := Rect(FPad, Scale(10), ClientWidth - FPad, FHeaderHeight);
-  DrawText(Canvas.Handle, PChar(FGroupCaption), -1, r,
+  if (FStack.Count > 0)
+  then s := #$2039 + '  ' + FGroupCaption  // "back" arrow: click the title to go up
+  else s := FGroupCaption;
+  DrawText(Canvas.Handle, PChar(s), -1, r,
     DT_CENTER or DT_TOP or DT_SINGLELINE or DT_END_ELLIPSIS or DT_NOPREFIX);
   Canvas.Font.Style := [];
 
@@ -474,6 +583,24 @@ begin
     FDragging := False;
     FDownIndex := -1;
     FDropIndex := -1;
+
+    // Dropped on the center of a sub-group: move the shortcut inside it
+    i := IndexAt(Point(X, Y));
+    if (src >= 0) and (i >= 0) and (i <> src) and (FItems[i] is TItemGroup)
+    then begin
+      var cell := CellRect(i);
+      cell.Inflate(-cell.Width div 4, -cell.Height div 4);
+      if cell.Contains(Point(X, Y))
+      then begin
+        var srcFile := ExcludeTrailingPathDelimiter(FItems[src].FileName);
+        var dstFile := IncludeTrailingPathDelimiter(FItems[i].FileName) + ExtractFileName(srcFile);
+        if not (FileExists(dstFile) or DirectoryExists(dstFile))
+        then MoveFile(PChar(srcFile), PChar(dstFile));
+        Reload;
+        Exit;
+      end;
+    end;
+
     if (src >= 0) and (dst >= 0)
     then begin
       if (dst > src) then Dec(dst);
@@ -487,13 +614,50 @@ begin
     Exit;
   end;
 
+  // Left click on the title of a sub-group: go back to the parent group
+  if (Button = mbLeft) and (Y < FHeaderHeight) and (FStack.Count > 0)
+  then begin
+    FDownIndex := -1;
+    NavigateBack;
+    Exit;
+  end;
+
   // Right click on the title / empty area: group menu
   if (Button = mbRight) and (IndexAt(Point(X, Y)) < 0)
   then begin
     menu := TPopupMenu.Create(Self);
     mi := TMenuItem.Create(menu);
+    mi.Caption := L10NFind('Group.NewSubGroup', 'New group inside');
+    mi.OnClick := DoNewGroup;
+    menu.Items.Add(mi);
+    mi := TMenuItem.Create(menu);
     mi.Caption := L10NFind('Group.SortAlphabetically', 'Sort alphabetically');
     mi.OnClick := DoSortAlphabetically;
+    menu.Items.Add(mi);
+    mi := TMenuItem.Create(menu);
+    mi.Caption := L10NFind('Group.OpenFolder', 'Open folder');
+    mi.Tag := -1;
+    mi.OnClick := DoOpenFolder;
+    menu.Items.Add(mi);
+    pt := ClientToScreen(Point(X, Y));
+    menu.Popup(pt.X, pt.Y);
+    Exit;
+  end;
+
+  // Right click on a sub-group: its own menu
+  i := IndexAt(Point(X, Y));
+  if (Button = mbRight) and (i >= 0) and (FItems[i] is TItemGroup)
+  then begin
+    menu := TPopupMenu.Create(Self);
+    mi := TMenuItem.Create(menu);
+    mi.Caption := L10NFind('Group.RenameTitle', 'Rename group');
+    mi.Tag := i;
+    mi.OnClick := DoRenameSubGroup;
+    menu.Items.Add(mi);
+    mi := TMenuItem.Create(menu);
+    mi.Caption := L10NFind('Group.OpenFolder', 'Open folder');
+    mi.Tag := i;
+    mi.OnClick := DoOpenFolder;
     menu.Items.Add(mi);
     pt := ClientToScreen(Point(X, Y));
     menu.Popup(pt.X, pt.Y);
@@ -508,10 +672,19 @@ begin
   end;
   FDownIndex := -1;
 
+  // Click on a sub-group: show its content in this window
+  if (Button = mbLeft) and (FItems[i] is TItemGroup)
+  then begin
+    NavigateInto(i);
+    Exit;
+  end;
+
   if (Button = mbLeft)
   then begin
     try
-      OpenByDefaultVerb(FOwnerWnd, FItems[i].Pidl);
+      // Open program: bring it to the front, otherwise launch it
+      if not (FItems[i].Running and ActivateProgram(FItems[i].TargetPath, 0))
+      then OpenByDefaultVerb(FOwnerWnd, FItems[i].Pidl);
     finally
       Close;
     end;
@@ -527,7 +700,13 @@ procedure TFormGroup.KeyDown(var Key: Word; Shift: TShiftState);
 begin
   inherited;
   if (Key = VK_ESCAPE)
-  then Close;
+  then begin
+    if (FStack.Count > 0)
+    then NavigateBack
+    else Close;
+  end
+  else if (Key = VK_BACK)
+  then NavigateBack;
 end;
 
 procedure TFormGroup.DoClose(var Action: TCloseAction);
@@ -541,7 +720,7 @@ begin
   case Message.Msg of
     WM_ACTIVATE:
       // Close when user clicks outside
-      if (LoWord(Message.WParam) = WA_INACTIVE)
+      if (LoWord(Message.WParam) = WA_INACTIVE) and (not FModalOpen)
       then PostMessage(Handle, WM_CLOSE, 0, 0);
     CM_MOUSELEAVE:
       SetHot(-1);
@@ -561,10 +740,23 @@ begin
 end;
 
 procedure TFormGroup.PopupAt(const AItemRect: TRect; const AAlign: TPanelAlign);
+begin
+  FAnchorRect := AItemRect;
+  FAlign := AAlign;
+  Reposition;
+  Show;
+  SetForegroundWindow(Handle);
+end;
+
+{ Place the window next to the bar item (also after the size changed) }
+procedure TFormGroup.Reposition;
 var
-  wa: TRect;
+  wa, AItemRect: TRect;
+  AAlign: TPanelAlign;
   L, T, gap: Integer;
 begin
+  AItemRect := FAnchorRect;
+  AAlign := FAlign;
   gap := Scale(6);
   wa := Screen.MonitorFromRect(AItemRect, mdNearest).WorkareaRect;
 
@@ -596,8 +788,6 @@ begin
 
   SetBounds(L, T, Width, Height);
   ApplyCorners;
-  Show;
-  SetForegroundWindow(Handle);
 end;
 
 end.

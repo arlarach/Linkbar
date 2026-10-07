@@ -1063,6 +1063,105 @@ object FrmProperties: TFrmProperties
           OnClick = Changed
         end
       end
+      object pnlAutoStart: TPanel
+        Left = 8
+        Top = 138
+        Width = 373
+        Height = 21
+        Anchors = [akLeft, akTop, akRight]
+        BevelOuter = bvNone
+        ShowCaption = False
+        TabOrder = 6
+        object chbAutoStart: TCheckBox
+          Left = 0
+          Top = 4
+          Width = 367
+          Height = 17
+          Align = alCustom
+          Caption = 'Start with Windows'
+          TabOrder = 0
+          OnClick = Changed
+        end
+      end
+      object pnlBarStyle: TPanel
+        Left = 8
+        Top = 166
+        Width = 373
+        Height = 22
+        Anchors = [akLeft, akTop, akRight]
+        BevelOuter = bvNone
+        ShowCaption = False
+        TabOrder = 7
+        object lblBarStyle: TLabel
+          Left = 0
+          Top = 0
+          Width = 60
+          Height = 22
+          Align = alLeft
+          Caption = 'Bar style:'
+          Layout = tlCenter
+        end
+        object cbbBarStyle: TComboBox
+          Left = 210
+          Top = 0
+          Width = 163
+          Height = 22
+          Align = alRight
+          Style = csDropDownList
+          TabOrder = 0
+          OnChange = Changed
+          Items.Strings = (
+            'Normal (screen edge)'
+            'Dock (Mac)')
+        end
+      end
+      object pnlZoom: TPanel
+        Left = 8
+        Top = 194
+        Width = 373
+        Height = 22
+        Anchors = [akLeft, akTop, akRight]
+        BevelOuter = bvNone
+        ShowCaption = False
+        TabOrder = 8
+        object lblZoom: TLabel
+          Left = 0
+          Top = 0
+          Width = 80
+          Height = 22
+          Align = alLeft
+          Caption = 'Magnification:'
+          Layout = tlCenter
+        end
+        object lblZoomValue: TLabel
+          Left = 333
+          Top = 0
+          Width = 40
+          Height = 22
+          Align = alRight
+          Alignment = taRightJustify
+          AutoSize = False
+          Caption = 'Off'
+          Layout = tlCenter
+        end
+        object trbZoom: TTrackBar
+          Left = 170
+          Top = 0
+          Width = 163
+          Height = 22
+          Align = alRight
+          Max = 200
+          Min = 100
+          PageSize = 10
+          Frequency = 10
+          Position = 100
+          ShowSelRange = False
+          TabOrder = 0
+          ThumbLength = 16
+          TickStyle = tsNone
+          OnChange = trbZoomChange
+        end
+      end
     end
     object tsAbout: TTabSheet
       Caption = 'About'

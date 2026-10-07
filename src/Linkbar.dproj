@@ -141,6 +141,7 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="Linkbar.DarkTheme.pas"/>
         <DCCReference Include="Linkbar.Settings.pas"/>
         <DCCReference Include="Linkbar.GroupForm.pas"/>
+        <DCCReference Include="Linkbar.ThumbForm.pas"/>
         <None Include="linkbar.inc"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

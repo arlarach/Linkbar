@@ -133,6 +133,15 @@ type
     trbOpacity: TTrackBar;
     pnlSysWidgets: TPanel;
     chbSysWidgets: TCheckBox;
+    pnlAutoStart: TPanel;
+    chbAutoStart: TCheckBox;
+    pnlBarStyle: TPanel;
+    lblBarStyle: TLabel;
+    cbbBarStyle: TComboBox;
+    pnlZoom: TPanel;
+    lblZoom: TLabel;
+    lblZoomValue: TLabel;
+    trbZoom: TTrackBar;
     procedure FormMouseWheel(Sender: TObject; Shift: TShiftState;
       WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
     procedure linkEmailLinkClick(Sender: TObject; const Link: string;
@@ -150,6 +159,7 @@ type
     procedure edtBkgndColorChange(Sender: TObject);
     procedure imCopyClick(Sender: TObject);
     procedure trbOpacityChange(Sender: TObject);
+    procedure trbZoomChange(Sender: TObject);
   protected
     procedure CreateParams(var Params: TCreateParams); override;
     procedure WMNCHitTest(var Message: TWMNCHitTest); message WM_NCHITTEST;
@@ -189,6 +199,44 @@ implementation
 uses
   Math, Graphics, Vcl.Clipbrd, Vcl.Themes, System.Win.Registry, System.StrUtils,
   Linkbar.Consts, Linkbar.OS, Linkbar.Shell, Linkbar.Theme, Linkbar.L10n, Linkbar.Common;
+
+const
+  AUTOSTART_KEY   = 'Software\Microsoft\Windows\CurrentVersion\Run';
+  AUTOSTART_VALUE = 'Linkbar';
+
+{ Linkbar is registered to start with Windows (current user) }
+function IsAutoStartEnabled: Boolean;
+var reg: TRegistry;
+begin
+  Result := False;
+  reg := TRegistry.Create(KEY_READ);
+  try
+    reg.RootKey := HKEY_CURRENT_USER;
+    if reg.OpenKeyReadOnly(AUTOSTART_KEY)
+    then Result := reg.ValueExists(AUTOSTART_VALUE);
+  finally
+    reg.Free;
+  end;
+end;
+
+{ Running Linkbar.exe without parameters opens all saved bars }
+procedure SetAutoStart(AEnable: Boolean);
+var reg: TRegistry;
+begin
+  reg := TRegistry.Create(KEY_READ or KEY_WRITE);
+  try
+    reg.RootKey := HKEY_CURRENT_USER;
+    if reg.OpenKey(AUTOSTART_KEY, True)
+    then begin
+      if AEnable
+      then reg.WriteString(AUTOSTART_VALUE, '"' + ParamStr(0) + '"')
+      else if reg.ValueExists(AUTOSTART_VALUE)
+      then reg.DeleteValue(AUTOSTART_VALUE);
+    end;
+  finally
+    reg.Free;
+  end;
+end;
 
 function TFrmProperties.ScaleDimension(const X: Integer): Integer;
 begin
@@ -373,6 +421,11 @@ begin
 
   // CPU/RAM widgets
   InitOffsetSize(pnlSysWidgets, pnlJumplistRecentMax);
+  // Start with Windows
+  InitOffsetSize(pnlAutoStart, pnlSysWidgets);
+  // Bar style (normal / dock) and magnification
+  InitOffsetSize(pnlBarStyle, pnlAutoStart);
+  InitOffsetSize(pnlZoom, pnlBarStyle);
 
 
   pgc1.Height := tsPanel.Top + pnlSeparator2.BoundsRect.Bottom + VO2 + tsPanel.Left;
@@ -403,6 +456,10 @@ begin
   chbTooltipShow.Checked := FLinkbar.TooltipShow;
   chbModernStyle.Checked := FLinkbar.ModernStyle;
   chbSysWidgets.Checked := FLinkbar.ShowSysWidgets;
+  chbAutoStart.Checked := IsAutoStartEnabled;
+  cbbBarStyle.ItemIndex := FLinkbar.BarStyle;
+  trbZoom.Position := FLinkbar.ZoomPercent;
+  trbZoomChange(nil);
 
   cbbScreenPosition.ItemIndex := Ord(FLinkbar.Align);
   cbbItemOrder.ItemIndex := Ord(FLinkbar.ItemOrder);
@@ -534,6 +591,10 @@ begin
   L10nControl(cbbTransparencyMode,    ['Properties.Opaque', 'Properties.Transparent', 'Properties.Glass']);
   L10nControl(chbModernStyle,          'Properties.ModernStyle');
   L10nControl(chbSysWidgets,           'Properties.SysWidgets');
+  L10nControl(chbAutoStart,            'Properties.AutoStart');
+  L10nControl(lblBarStyle,             'Properties.BarStyle');
+  L10nControl(cbbBarStyle,            ['Properties.BarStyleNormal', 'Properties.BarStyleDock']);
+  L10nControl(lblZoom,                 'Properties.Zoom');
 
   // Items
   L10nControl(lblShortcuts,            'Properties.Shortcuts');
@@ -745,6 +806,9 @@ begin
   FLinkbar.TooltipShow := chbTooltipShow.Checked;
   FLinkbar.ModernStyle := chbModernStyle.Checked;
   FLinkbar.ShowSysWidgets := chbSysWidgets.Checked;
+  SetAutoStart(chbAutoStart.Checked);
+  FLinkbar.ZoomPercent := trbZoom.Position;
+  FLinkbar.BarStyle := cbbBarStyle.ItemIndex;
 
   FLinkbar.UpdateItemSizes;
 
@@ -841,6 +905,16 @@ begin
   end;
   PreviewBackground;
   Changed(Sender);
+end;
+
+{ Magnification slider: 100% = off }
+procedure TFrmProperties.trbZoomChange(Sender: TObject);
+begin
+  if (trbZoom.Position <= 100)
+  then lblZoomValue.Caption := L10NFind('Properties.ZoomOff', 'Off')
+  else lblZoomValue.Caption := IntToStr(trbZoom.Position) + ' %';
+  if (Sender <> nil)
+  then Changed(Sender);
 end;
 
 { Live preview of background color/opacity on the bar (not saved until Apply/OK) }
