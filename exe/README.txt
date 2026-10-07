@@ -8,7 +8,7 @@ Note:
 1) Linkbar support Windows Vista and above
 2) Linkbar work with .lnk, .url and .website files
 
-Version: 1.7.0
+Version: 1.8.0
 License type: Freeware
 OS: Windows Vista/7/8/8.1/10
 Languages: English (default), Brazilian, Сhinese-Simplified, French, Indonesian, Italian, German, Greek, Japanese, Korean, Polish, Russian, Spanish, localization support
@@ -64,6 +64,20 @@ add: For Windows 10 support dark mode for dialogs
 add: For Windows 10 support high contrast theme for panel and Jumplist
 add: Drag&Drop in Jumplists
 add: Shield for shortcut with flag "Run as Administrator" (Properties - Shortcut - Advanced)
+
+===============================================================================
+
+== Version 1.8.0 (Oct, 2026) - fork arlarach/Linkbar:
+
+add: Action buttons: send a keyboard shortcut (Ctrl+C, Win+Shift+S, media keys...) or type a text
+add: Profiles (for example Work / Personal): switch from the menu or with Ctrl + mouse wheel
+add: Hide the bar when an app is full screen (games, videos)
+add: Quick size buttons (small / medium / large) in Settings
+add: Group background color (presets or custom), also on the group icon
+add: Groups inside groups
+add: Click on an open program brings it to the front; live window thumbnails on hover
+add: Start with Windows option
+add: Dock style (Mac-like) with adjustable magnification; Ctrl+drag slides it along the edge
 
 ===============================================================================
 

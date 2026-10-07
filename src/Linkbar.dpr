@@ -33,7 +33,8 @@ uses
   Linkbar.DarkTheme in 'Linkbar.DarkTheme.pas',
   Linkbar.Settings in 'Linkbar.Settings.pas',
   Linkbar.GroupForm in 'Linkbar.GroupForm.pas',
-  Linkbar.ThumbForm in 'Linkbar.ThumbForm.pas';
+  Linkbar.ThumbForm in 'Linkbar.ThumbForm.pas',
+  Linkbar.Actions in 'Linkbar.Actions.pas';
 
 {$R *.res}
 

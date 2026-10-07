@@ -65,11 +65,11 @@
         <VerInfo_Release>0</VerInfo_Release>
         <PostBuildEventCancelOnError>false</PostBuildEventCancelOnError>
         <Manifest_File>linkbar.exe.manifest</Manifest_File>
-        <VerInfo_Keys>CompanyName=linkbar@yandex.ru;FileDescription=Windows desktop toolbar;FileVersion=1.7.0.0;InternalName=Linkbar;LegalCopyright=linkbar@yandex.ru;LegalTrademarks=;OriginalFilename=Linkbar.exe;ProductName=Linkbar;ProductVersion=1.7.0;Comments=Powered by Delphi 13 Community Edition</VerInfo_Keys>
+        <VerInfo_Keys>CompanyName=linkbar@yandex.ru;FileDescription=Windows desktop toolbar;FileVersion=1.8.0.0;InternalName=Linkbar;LegalCopyright=linkbar@yandex.ru;LegalTrademarks=;OriginalFilename=Linkbar.exe;ProductName=Linkbar;ProductVersion=1.8.0;Comments=Powered by Delphi 13 Community Edition</VerInfo_Keys>
         <VerInfo_Locale>1033</VerInfo_Locale>
         <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
         <DCC_Namespace>Vcl;Vcl.Imaging;Vcl.Touch;Vcl.Samples;Vcl.Shell;System;Xml;Data;Datasnap;Web;Soap;Winapi;System.Win;$(DCC_Namespace)</DCC_Namespace>
-        <VerInfo_MinorVer>7</VerInfo_MinorVer>
+        <VerInfo_MinorVer>8</VerInfo_MinorVer>
         <DCC_ImageBase>00400000</DCC_ImageBase>
         <DCC_UsePackage>vcl;rtl;vclx;vclie;VclSmp;dss;vclactnband;vclshlctrls;$(DCC_UsePackage)</DCC_UsePackage>
         <DCC_ExeOutput>..\exe</DCC_ExeOutput>
@@ -142,6 +142,7 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="Linkbar.Settings.pas"/>
         <DCCReference Include="Linkbar.GroupForm.pas"/>
         <DCCReference Include="Linkbar.ThumbForm.pas"/>
+        <DCCReference Include="Linkbar.Actions.pas"/>
         <None Include="linkbar.inc"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

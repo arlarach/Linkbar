@@ -171,6 +171,11 @@ type
     edtHotKey: THotKeyEdit;
     FCanChanged: Boolean;
     FOpacityUpdating: Boolean;
+    pnlSizePresets: TPanel;
+    pnlHideFullscreen: TPanel;
+    chbHideFullscreen: TCheckBox;
+    procedure CreateExtraControls;
+    procedure SizePresetClick(Sender: TObject);
     procedure SetBackgroundColor(AValue: Cardinal);
     procedure ApplyDarkStyle;
     procedure SyncOpacityFromColor;
@@ -241,6 +246,78 @@ end;
 function TFrmProperties.ScaleDimension(const X: Integer): Integer;
 begin
   Result := MulDiv(X, Self.PixelsPerInch, 96);
+end;
+
+{ Controls added in code (no DFM changes needed) }
+procedure TFrmProperties.CreateExtraControls;
+const
+  PRESET_KEYS: array[0..2] of string = ('Properties.SizeSmall', 'Properties.SizeMedium', 'Properties.SizeLarge');
+  PRESET_DEF: array[0..2] of string = ('Small', 'Medium', 'Large');
+var
+  lbl: TLabel;
+  btn: TButton;
+  i: Integer;
+begin
+  // Items page: quick size buttons
+  pnlSizePresets := TPanel.Create(Self);
+  pnlSizePresets.Parent := tsItems;
+  pnlSizePresets.BevelOuter := bvNone;
+  pnlSizePresets.ShowCaption := False;
+  pnlSizePresets.ParentBackground := True;
+  pnlSizePresets.SetBounds(pnlDummy2.Left, pnlDummy2.Top, pnlDummy2.Width, pnlDummy2.Height);
+  pnlSizePresets.Anchors := [akLeft, akTop, akRight];
+
+  lbl := TLabel.Create(Self);
+  lbl.Parent := pnlSizePresets;
+  lbl.Align := alLeft;
+  lbl.Layout := tlCenter;
+  lbl.Caption := L10NFind('Properties.SizePresets', 'Quick size:');
+
+  // alRight keeps the order of the Left positions: Small, Medium, Large
+  for i := 0 to 2 do
+  begin
+    btn := TButton.Create(Self);
+    btn.Parent := pnlSizePresets;
+    btn.Caption := L10NFind(PRESET_KEYS[i], PRESET_DEF[i]);
+    btn.Tag := i;
+    btn.Width := ScaleDimension(54);
+    btn.Left := pnlSizePresets.Width + i * ScaleDimension(60);
+    btn.Align := alRight;
+    btn.AlignWithMargins := True;
+    btn.Margins.SetBounds(ScaleDimension(4), 0, 0, 0);
+    btn.OnClick := SizePresetClick;
+  end;
+
+  // Additional page: hide when an app is full screen
+  pnlHideFullscreen := TPanel.Create(Self);
+  pnlHideFullscreen.Parent := tsAdditionally;
+  pnlHideFullscreen.BevelOuter := bvNone;
+  pnlHideFullscreen.ShowCaption := False;
+  pnlHideFullscreen.ParentBackground := True;
+  pnlHideFullscreen.SetBounds(pnlAutoStart.Left, pnlAutoStart.Top, pnlAutoStart.Width, pnlAutoStart.Height);
+  pnlHideFullscreen.Anchors := [akLeft, akTop, akRight];
+
+  chbHideFullscreen := TCheckBox.Create(Self);
+  chbHideFullscreen.Parent := pnlHideFullscreen;
+  chbHideFullscreen.SetBounds(chbAutoStart.Left, chbAutoStart.Top, chbAutoStart.Width, chbAutoStart.Height);
+  chbHideFullscreen.Anchors := [akLeft, akTop, akRight];
+  chbHideFullscreen.Caption := L10NFind('Properties.HideFullscreen', 'Hide when an app is full screen (games, videos)');
+  chbHideFullscreen.OnClick := Changed;
+end;
+
+{ Small / medium / large: icon size + margins }
+procedure TFrmProperties.SizePresetClick(Sender: TObject);
+const
+  ICON: array[0..2] of Integer = (24, 32, 48);
+  MARGIN: array[0..2] of Integer = (2, 4, 6);
+var i: Integer;
+begin
+  i := TButton(Sender).Tag;
+  if (i < 0) or (i > 2) then Exit;
+  nseIconSize.Value := ICON[i];
+  nseMarginH.Value := MARGIN[i];
+  nseMarginV.Value := MARGIN[i];
+  Changed(Sender);
 end;
 
 procedure TFrmProperties.SpeedButton2Click(Sender: TObject);
@@ -360,11 +437,15 @@ begin
 
   { Page Items }
 
+  CreateExtraControls;
+
   // Icon size
   InitOffsetSize(pnlDummy2, lblShortcuts);
   InitSpinEdit(nseIconSize, ICON_SIZE_MIN, ICON_SIZE_MAX);
+  // Quick sizes (small / medium / large)
+  InitOffsetSize(pnlSizePresets, pnlDummy2);
   // Margins
-  InitOffsetSize(pnlDummy3, pnlDummy2);
+  InitOffsetSize(pnlDummy3, pnlSizePresets);
   InitSpinEdit(nseMarginH, MARGIN_MIN, MARGIN_MAX);
   InitSpinEdit(nseMarginV, MARGIN_MIN, MARGIN_MAX);
   // Text position
@@ -426,6 +507,8 @@ begin
   // Bar style (normal / dock) and magnification
   InitOffsetSize(pnlBarStyle, pnlAutoStart);
   InitOffsetSize(pnlZoom, pnlBarStyle);
+  // Hide when an app is full screen
+  InitOffsetSize(pnlHideFullscreen, pnlZoom);
 
 
   pgc1.Height := tsPanel.Top + pnlSeparator2.BoundsRect.Bottom + VO2 + tsPanel.Left;
@@ -457,6 +540,7 @@ begin
   chbModernStyle.Checked := FLinkbar.ModernStyle;
   chbSysWidgets.Checked := FLinkbar.ShowSysWidgets;
   chbAutoStart.Checked := IsAutoStartEnabled;
+  chbHideFullscreen.Checked := FLinkbar.HideOnFullscreen;
   cbbBarStyle.ItemIndex := FLinkbar.BarStyle;
   trbZoom.Position := FLinkbar.ZoomPercent;
   trbZoomChange(nil);
@@ -806,6 +890,7 @@ begin
   FLinkbar.ModernStyle := chbModernStyle.Checked;
   FLinkbar.ShowSysWidgets := chbSysWidgets.Checked;
   SetAutoStart(chbAutoStart.Checked);
+  FLinkbar.HideOnFullscreen := chbHideFullscreen.Checked;
   FLinkbar.ZoomPercent := trbZoom.Position;
   FLinkbar.BarStyle := cbbBarStyle.ItemIndex;
   FLinkbar.ApplyWindowAccent; // dock: repaint with the new color

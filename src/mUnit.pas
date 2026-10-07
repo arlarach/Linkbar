@@ -100,6 +100,12 @@ type
     FThumbForm: TForm;          // live thumbnails popup (Linkbar.ThumbForm)
     FThumbIndex: Integer;
     FForegroundAtMouseDown: HWND;
+    FLastForeignWnd: HWND;       // last window in front that is not ours (action buttons)
+    FHideOnFullscreen: Boolean;
+    FHiddenByFullscreen: Boolean;
+    FLinksBaseDir: string;       // links folder of the main profile
+    FProfile: string;            // current profile ('' = main)
+    imNewAction, imEditAction, imDeleteAction, imActionLine, imProfiles: TMenuItem;
     FCpuLoad, FRamLoad: Integer;       // 0..100
     FPrevIdle, FPrevKernel, FPrevUser: UInt64;
     FExtDragIconSize: Integer;
@@ -221,6 +227,25 @@ type
     procedure DoExecuteItem(const AIndex: Integer);
     procedure ShowGroup(const AIndex: Integer);
     procedure DragExternalFile(const AFileName: string; AIcon: HBITMAP; AIconSize: Integer);
+    procedure GroupChanged(Sender: TObject);
+    procedure CheckForeground;
+    procedure SetHideOnFullscreen(AValue: Boolean);
+    function IsOurWindow(const AWnd: HWND): Boolean;
+    procedure RunActionItem(const AIndex: Integer);
+    procedure imNewActionClick(Sender: TObject);
+    procedure imEditActionClick(Sender: TObject);
+    procedure imDeleteActionClick(Sender: TObject);
+    function ProfilesDir: string;
+    function ProfileDir(const AName: string): string;
+    function GetProfileNames: TArray<string>;
+    procedure ReloadLinks;
+    procedure SwitchProfile(const AName: string);
+    procedure CycleProfile(const ADelta: Integer);
+    procedure BuildProfilesMenu;
+    procedure ProfileItemClick(Sender: TObject);
+    procedure ProfileNewClick(Sender: TObject);
+    procedure ProfileRenameClick(Sender: TObject);
+    procedure ProfileDeleteClick(Sender: TObject);
     procedure RenameGroup(const AIndex: Integer);
     procedure DoRenameItem(const AIndex: Integer);
     procedure DoDelete(const AIndex: Integer);
@@ -284,6 +309,7 @@ type
     property TooltipShow: Boolean read FTooltipShow write FTooltipShow;
     property ModernStyle: Boolean read FModernStyle write SetModernStyle;
     property ShowSysWidgets: Boolean read FShowSysWidgets write SetShowSysWidgets;
+    property HideOnFullscreen: Boolean read FHideOnFullscreen write SetHideOnFullscreen;
     property BarStyle: Integer read FBarStyle write SetBarStyle;
     procedure ApplyWindowAccent;
     property ZoomPercent: Integer read FZoomPercent write SetZoomPercent;
@@ -330,7 +356,8 @@ uses
   Winapi.ShellAPI,
   ExplorerMenu, Linkbar.Shell, Linkbar.Theme,
   Linkbar.OS, Linkbar.L10n, JumpLists.Form, JumpLists.Api_2, RenameDialog,
-  Linkbar.SettingsForm, Linkbar.Settings, Linkbar.GroupForm, Linkbar.ThumbForm;
+  Linkbar.SettingsForm, Linkbar.Settings, Linkbar.GroupForm, Linkbar.ThumbForm,
+  Linkbar.Actions;
 
 const
   bf: TBlendFunction = (BlendOp: AC_SRC_OVER; BlendFlags: 0;
@@ -342,6 +369,7 @@ const
   TIMER_SYS_WIDGETS = 17;
   TIMER_RUNNING = 18;
   TIMER_THUMBS = 19;
+  TIMER_FOREGROUND = 20;
 
 function EnumWindowProcStopDirWatch(wnd: HWND; lParam: LPARAM): BOOL; stdcall;
 var
@@ -886,6 +914,15 @@ begin
   settings.Open(FSettingsFileName);
   // Read
   WorkDir               := settings.Read(INI_DIR_LINKS, DEF_DIR_LINKS);
+  FLinksBaseDir         := WorkDir;  // expanded by SetWorkDir
+  FProfile              := Trim(settings.Read(INI_PROFILE, ''));
+  if (FProfile <> '')
+  then begin
+    if DirectoryExists(ProfileDir(FProfile))
+    then WorkDir := ProfileDir(FProfile)
+    else FProfile := '';
+  end;
+  FHideOnFullscreen     := settings.Read(INI_HIDE_FULLSCREEN, DEF_HIDE_FULLSCREEN);
   FAutoHide             := settings.Read(INI_AUTOHIDE, DEF_AUTOHIDE);
   FAutoHideTransparency := settings.Read(INI_AUTOHIDE_TRANSPARENCY, DEF_AUTOHIDE_TRANSPARENCY);
   FAutoShowDelay        := settings.Read(INI_AUTOSHOW_DELAY, DEF_AUTOSHOW_DELAY, 0, 60000);
@@ -957,6 +994,9 @@ begin
   // "Program is open" indicator
   SetTimer(Handle, TIMER_RUNNING, 2000, nil);
 
+  // Window in front: action buttons target + hide on full screen
+  SetTimer(Handle, TIMER_FOREGROUND, 500, nil);
+
   // Register Hotkey
   HotkeyInfo := hki;
 end;
@@ -989,6 +1029,8 @@ begin
     settings.Open(FSettingsFileName);
     // Write
     settings.Write(INI_MONITORNUM, FMonitorNum);
+    settings.Write(INI_HIDE_FULLSCREEN, FHideOnFullscreen);
+    settings.Write(INI_PROFILE, FProfile);
     settings.Write(INI_EDGE, Integer(Align));
     settings.Write(INI_AUTOHIDE, AutoHide);
     settings.Write(INI_AUTOHIDE_TRANSPARENCY, FAutoHideTransparency);
@@ -1055,6 +1097,28 @@ begin
   Self.DesktopFont := True;
 
   L10n;
+
+  // New > Action button
+  imNewAction := TMenuItem.Create(pMenu);
+  imNewAction.Caption := L10NFind('Menu.Action', 'Action button');
+  imNewAction.OnClick := imNewActionClick;
+  imNew.Insert(imNew.IndexOf(imNewGroup) + 1, imNewAction);
+  // Edit / delete an action button (only shown for action buttons)
+  imEditAction := TMenuItem.Create(pMenu);
+  imEditAction.Caption := L10NFind('Menu.EditAction', 'Edit action...');
+  imEditAction.OnClick := imEditActionClick;
+  pMenu.Items.Insert(0, imEditAction);
+  imDeleteAction := TMenuItem.Create(pMenu);
+  imDeleteAction.Caption := L10NFind('Menu.DeleteAction', 'Delete action');
+  imDeleteAction.OnClick := imDeleteActionClick;
+  pMenu.Items.Insert(1, imDeleteAction);
+  imActionLine := TMenuItem.Create(pMenu);
+  imActionLine.Caption := '-';
+  pMenu.Items.Insert(2, imActionLine);
+  // Profiles (sub-menu filled when the menu opens)
+  imProfiles := TMenuItem.Create(pMenu);
+  imProfiles.Caption := L10NFind('Menu.Profile', 'Profile');
+  pMenu.Items.Insert(pMenu.Items.IndexOf(imNew) + 1, imProfiles);
 
   pMenu.Items.RethinkHotkeys;
   imNew.RethinkHotkeys;
@@ -1536,6 +1600,8 @@ begin
         then begin
           if (Items[idx] is TItemGroup)
           then ShowGroup(idx)
+          else if (Items[idx] is TItemAction)
+          then RunActionItem(idx)
           else Items[idx].DoExecute(Handle);
         end;
       end
@@ -1567,7 +1633,9 @@ begin
   if not IsItemIndex(AIndex)
   then Exit;
 
-  if (Items[AIndex] is TItemGroup)
+  if (Items[AIndex] is TItemAction)
+  then RunActionItem(AIndex)
+  else if (Items[AIndex] is TItemGroup)
   then ShowGroup(AIndex)
   // Open program: bring it to the front / minimize / next window (like the taskbar)
   else if Items[AIndex].Running
@@ -1588,6 +1656,7 @@ begin
   ToolTip.Cancel;
   form.OnDestroy := OnFormJumplistDestroy;
   form.OnDragOut := DragExternalFile;
+  form.OnGroupChanged := GroupChanged;
   FLockHotIndex := True;
   FLockAutoHide := True;
   form.PopupAt(itemRect, Align);
@@ -1604,6 +1673,7 @@ begin
      and (GetKeyState(VK_SHIFT) < 0)
      and (not Items.IsSeparator(Items[iIndex]))
      and (not (Items[iIndex] is TItemGroup))
+     and (not (Items[iIndex] is TItemAction))
   then begin
     ShellExecute(Handle, 'runas', PChar(Items[iIndex].FileName), nil, nil, SW_SHOWNORMAL);
     Exit;
@@ -1647,6 +1717,384 @@ begin
     FExtDragIcon := 0;
     FExtDragIconSize := 0;
   end;
+end;
+
+{ ---------- window in front / full screen ---------- }
+
+function LB_SHQueryUserNotificationState(out pquns: Integer): HRESULT; stdcall;
+  external 'shell32.dll' name 'SHQueryUserNotificationState';
+
+function TLinkbarWcl.IsOurWindow(const AWnd: HWND): Boolean;
+var pid: DWORD;
+begin
+  Result := True;
+  if (AWnd = 0) or not IsWindow(AWnd) then Exit;
+  pid := 0;
+  GetWindowThreadProcessId(AWnd, @pid);
+  Result := (pid = GetCurrentProcessId);
+end;
+
+procedure TLinkbarWcl.CheckForeground;
+const
+  QUNS_RUNNING_D3D_FULL_SCREEN = 3;
+  QUNS_PRESENTATION_MODE = 4;
+var
+  fg: HWND;
+  r: TRect;
+  mon: Vcl.Forms.TMonitor;
+  mr: TRect;
+  cls: array[0..63] of Char;
+  state: Integer;
+  full: Boolean;
+begin
+  fg := GetForegroundWindow;
+  if not IsOurWindow(fg)
+  then FLastForeignWnd := fg;
+
+  full := False;
+  if FHideOnFullscreen and (fg <> 0) and not IsOurWindow(fg)
+  then begin
+    // Windows own detection (games, presentations)
+    state := 0;
+    if Succeeded(LB_SHQueryUserNotificationState(state))
+       and ((state = QUNS_RUNNING_D3D_FULL_SCREEN) or (state = QUNS_PRESENTATION_MODE))
+    then full := True
+    else begin
+      // A window that covers our whole monitor (video, browser F11, borderless games)
+      cls[0] := #0;
+      GetClassName(fg, cls, Length(cls));
+      // desktop, taskbar, Start menu, task view: not "full screen apps"
+      if not MatchText(PChar(@cls[0]), ['Progman', 'WorkerW', 'Shell_TrayWnd',
+               'MultitaskingViewFrame', 'XamlExplorerHostIslandWindow',
+               'Windows.UI.Core.CoreWindow', 'ForegroundStaging'])
+         and not IsZoomed(fg)
+         and GetWindowRect(fg, r)
+      then begin
+        // only when it is on the same monitor as the bar
+        mon := Screen.MonitorFromWindow(fg, mdNearest);
+        if Assigned(mon) and (mon = Screen.MonitorFromWindow(Handle, mdNearest))
+        then begin
+          mr := mon.BoundsRect;
+          full := (r.Left <= mr.Left) and (r.Top <= mr.Top)
+              and (r.Right >= mr.Right) and (r.Bottom >= mr.Bottom);
+        end;
+      end;
+    end;
+  end;
+
+  if (full <> FHiddenByFullscreen)
+  then begin
+    FHiddenByFullscreen := full;
+    if full
+    then begin
+      CloseThumbs;
+      ToolTip.Cancel;
+      ShowWindow(Handle, SW_HIDE);
+    end
+    else ShowWindow(Handle, SW_SHOWNA);
+  end;
+end;
+
+procedure TLinkbarWcl.SetHideOnFullscreen(AValue: Boolean);
+begin
+  FHideOnFullscreen := AValue;
+  if not AValue and FHiddenByFullscreen
+  then begin
+    FHiddenByFullscreen := False;
+    ShowWindow(Handle, SW_SHOWNA);
+  end;
+end;
+
+{ ---------- action buttons ---------- }
+
+procedure TLinkbarWcl.RunActionItem(const AIndex: Integer);
+var target: HWND;
+begin
+  target := FForegroundAtMouseDown;
+  if IsOurWindow(target)
+  then target := FLastForeignWnd;
+  if IsOurWindow(target)
+  then target := 0;
+  ReleaseCapture;
+  RunAction(TItemAction(Items[AIndex]).Data, target);
+end;
+
+procedure TLinkbarWcl.imNewActionClick(Sender: TObject);
+var name: string;
+    data: TActionData;
+    fn: string;
+    n: Integer;
+begin
+  name := '';
+  data.Clear;
+  FLockAutoHide := True;
+  try
+    if not EditAction(name, data, True)
+    then Exit;
+  finally
+    FLockAutoHide := False;
+  end;
+  fn := WorkDir + name + ES_ACTION;
+  n := 2;
+  while FileExists(fn) do
+  begin
+    fn := WorkDir + name + ' ' + IntToStr(n) + ES_ACTION;
+    Inc(n);
+  end;
+  ForceDirectories(WorkDir);
+  SaveActionFile(fn, data); // the folder watcher adds it to the bar
+end;
+
+procedure TLinkbarWcl.imEditActionClick(Sender: TObject);
+var item: TItemAction;
+    name, oldFile, newFile: string;
+    data: TActionData;
+begin
+  if not (IsItemIndex(FItemPopup) and (Items[FItemPopup] is TItemAction))
+  then Exit;
+  item := TItemAction(Items[FItemPopup]);
+  oldFile := item.FileName;
+  name := item.Caption;
+  data := item.Data;
+  FLockAutoHide := True;
+  try
+    if not EditAction(name, data, False)
+    then Exit;
+  finally
+    FLockAutoHide := False;
+  end;
+  SaveActionFile(oldFile, data);
+  newFile := ExtractFilePath(oldFile) + name + ES_ACTION;
+  if not SameText(newFile, oldFile) and not FileExists(newFile)
+     and RenameFile(oldFile, newFile)
+  then item.FileName := newFile;
+  // reload icon/data
+  item.NeedLoad := True;
+  tmrUpdate.Enabled := False;
+  tmrUpdate.Enabled := True;
+end;
+
+procedure TLinkbarWcl.imDeleteActionClick(Sender: TObject);
+begin
+  if IsItemIndex(FItemPopup) and (Items[FItemPopup] is TItemAction)
+  then SHDeleteOp(Handle, Items[FItemPopup].FileName, True);
+end;
+
+{ ---------- profiles ---------- }
+
+function TLinkbarWcl.ProfilesDir: string;
+begin
+  Result := IncludeTrailingPathDelimiter(FLinksBaseDir) + PROFILES_DIR_NAME + '\';
+end;
+
+function TLinkbarWcl.ProfileDir(const AName: string): string;
+begin
+  if (AName = '')
+  then Result := IncludeTrailingPathDelimiter(FLinksBaseDir)
+  else Result := ProfilesDir + AName + '\';
+end;
+
+function TLinkbarWcl.GetProfileNames: TArray<string>;
+var sr: TSearchRec;
+    sl: TStringList;
+begin
+  sl := TStringList.Create;
+  try
+    if (FindFirst(ProfilesDir + '*', faDirectory, sr) = 0)
+    then begin
+      repeat
+        if ((sr.Attr and faDirectory) <> 0) and (sr.Name <> '.') and (sr.Name <> '..')
+        then sl.Add(sr.Name);
+      until (FindNext(sr) <> 0);
+      FindClose(sr);
+    end;
+    sl.Sort;
+    Result := sl.ToStringArray;
+  finally
+    sl.Free;
+  end;
+end;
+
+procedure TLinkbarWcl.ReloadLinks;
+begin
+  FHotIndex := ITEM_NONE;
+  FPressedIndex := ITEM_NONE;
+  FItemPopup := ITEM_NONE;
+  GetOrCreateFilesList(WorkDir + LINKSLIST_FILE_NAME);
+  for var item in Items do
+    Items.LoadIcon(item);
+  UpdateRunningState;
+  oAppBar.AppBarPosChanged;
+end;
+
+procedure TLinkbarWcl.SwitchProfile(const AName: string);
+var dir: string;
+    settings: TSettingsFile;
+begin
+  if SameText(AName, FProfile) then Exit;
+  dir := ProfileDir(AName);
+  if not (DirectoryExists(dir) or ForceDirectories(dir)) then Exit;
+  CloseThumbs;
+  ToolTip.Cancel;
+  SaveLinks;
+  FProfile := AName;
+  settings.Open(FSettingsFileName);
+  settings.Write(INI_PROFILE, FProfile);
+  settings.Close;
+  WorkDir := dir;
+  ReloadLinks;
+end;
+
+procedure TLinkbarWcl.CycleProfile(const ADelta: Integer);
+var names: TArray<string>;
+    i, cur: Integer;
+begin
+  names := [''] + GetProfileNames;
+  if (Length(names) < 2) then Exit;
+  cur := 0;
+  for i := 0 to High(names) do
+    if SameText(names[i], FProfile) then cur := i;
+  cur := (cur + ADelta + Length(names)) mod Length(names);
+  SwitchProfile(names[cur]);
+end;
+
+procedure TLinkbarWcl.BuildProfilesMenu;
+
+  function Add(const ACaption, AHint: string; AOnClick: TNotifyEvent; AChecked: Boolean = False): TMenuItem;
+  begin
+    Result := TMenuItem.Create(pMenu);
+    Result.Caption := ACaption;
+    Result.Hint := AHint;
+    Result.Checked := AChecked;
+    Result.OnClick := AOnClick;
+    imProfiles.Add(Result);
+  end;
+
+var name, mainName: string;
+begin
+  imProfiles.Clear;
+  mainName := L10NFind('Profile.Main', 'Main');
+  if (FProfile = '')
+  then imProfiles.Caption := L10NFind('Menu.Profile', 'Profile') + ': ' + mainName
+  else imProfiles.Caption := L10NFind('Menu.Profile', 'Profile') + ': ' + FProfile;
+
+  Add(mainName, '', ProfileItemClick, FProfile = '');
+  for name in GetProfileNames do
+    Add(name, name, ProfileItemClick, SameText(name, FProfile));
+  Add('-', '', nil);
+  Add(L10NFind('Profile.New', 'New profile...'), '', ProfileNewClick);
+  if (FProfile <> '')
+  then begin
+    Add(L10NFind('Profile.Rename', 'Rename this profile...'), '', ProfileRenameClick);
+    Add(L10NFind('Profile.Delete', 'Delete this profile'), '', ProfileDeleteClick);
+  end;
+end;
+
+procedure TLinkbarWcl.ProfileItemClick(Sender: TObject);
+begin
+  SwitchProfile(TMenuItem(Sender).Hint);
+end;
+
+function ValidProfileName(const AName: string): Boolean;
+const InvalidChars = '\/:*?"<>|';
+var ch: Char;
+begin
+  Result := (AName <> '') and (AName <> '.') and (AName <> '..');
+  if Result then
+    for ch in InvalidChars do
+      if (Pos(ch, AName) > 0) then Exit(False);
+end;
+
+procedure TLinkbarWcl.ProfileNewClick(Sender: TObject);
+var name: string;
+begin
+  name := '';
+  FLockAutoHide := True;
+  try
+    if not InputQuery(L10NFind('Profile.NewTitle', 'New profile'),
+                      L10NFind('Profile.NamePrompt', 'Profile name (for example Work):'), name)
+    then Exit;
+  finally
+    FLockAutoHide := False;
+  end;
+  name := Trim(name);
+  if not ValidProfileName(name)
+  then Exit;
+  if DirectoryExists(ProfileDir(name))
+  then begin
+    SwitchProfile(name);
+    Exit;
+  end;
+  if ForceDirectories(ProfileDir(name))
+  then SwitchProfile(name);
+end;
+
+procedure TLinkbarWcl.ProfileRenameClick(Sender: TObject);
+var name, oldName: string;
+    settings: TSettingsFile;
+begin
+  if (FProfile = '') then Exit;
+  oldName := FProfile;
+  name := oldName;
+  FLockAutoHide := True;
+  try
+    if not InputQuery(L10NFind('Profile.RenameTitle', 'Rename profile'),
+                      L10NFind('Profile.NamePrompt', 'Profile name (for example Work):'), name)
+    then Exit;
+  finally
+    FLockAutoHide := False;
+  end;
+  name := Trim(name);
+  if not ValidProfileName(name) or SameText(name, oldName)
+     or DirectoryExists(ProfileDir(name))
+  then Exit;
+  // stop watching the folder before renaming it
+  SaveLinks;
+  WorkDir := FLinksBaseDir;
+  if RenameFile(ExcludeTrailingPathDelimiter(ProfileDir(oldName)),
+                ExcludeTrailingPathDelimiter(ProfileDir(name)))
+  then FProfile := name;
+  WorkDir := ProfileDir(FProfile);
+  settings.Open(FSettingsFileName);
+  settings.Write(INI_PROFILE, FProfile);
+  settings.Close;
+  ReloadLinks;
+end;
+
+procedure TLinkbarWcl.ProfileDeleteClick(Sender: TObject);
+var name: string;
+begin
+  if (FProfile = '') then Exit;
+  name := FProfile;
+  FLockAutoHide := True;
+  try
+    if (MessageBox(Handle,
+          PChar(Format(L10NFind('Profile.DeleteConfirm',
+            'Delete the profile "%s"? Its icons go to the Recycle Bin.'), [name])),
+          PChar(APP_NAME_LINKBAR), MB_ICONQUESTION or MB_YESNO) <> IDYES)
+    then Exit;
+  finally
+    FLockAutoHide := False;
+  end;
+  SwitchProfile('');
+  SHDeleteOp(Handle, ExcludeTrailingPathDelimiter(ProfileDir(name)), True);
+end;
+
+{ Content or color of an open group changed: reload its icon on the bar }
+procedure TLinkbarWcl.GroupChanged(Sender: TObject);
+var root: string;
+begin
+  if not (Sender is TFormGroup) then Exit;
+  root := ExcludeTrailingPathDelimiter(TFormGroup(Sender).RootFolder);
+  for var i := 0 to Items.Count-1 do
+    if (Items[i] is TItemGroup)
+       and SameText(ExcludeTrailingPathDelimiter(Items[i].FileName), root)
+    then begin
+      Items[i].NeedLoad := True;
+      tmrUpdate.Enabled := False;
+      tmrUpdate.Enabled := True;
+      Break;
+    end;
 end;
 
 procedure TLinkbarWcl.RenameGroup(const AIndex: Integer);
@@ -1802,6 +2250,9 @@ begin
   if (FPopupMenu = 0)
   then Exit;
 
+  BuildProfilesMenu;
+  var isAction := IsItemIndex(FItemPopup) and (Items[FItemPopup] is TItemAction);
+
   //for i := 0 to pMenu.Items.Count-1 do
   for var item: TMenuItem in pMenu.Items
   do begin
@@ -1814,6 +2265,11 @@ begin
       if item.Tag = 10 // Hide in regular menu
       then Continue;
     end;
+
+    // "Edit/Delete action" only for action buttons
+    if ((item = imEditAction) or (item = imDeleteAction) or (item = imActionLine))
+       and not isAction
+    then Continue;
 
     Flags := MF_BYCOMMAND;
 
@@ -1845,6 +2301,8 @@ begin
         if (subItem.IsLine)
         then Flags := Flags or MF_SEPARATOR
         else Flags := Flags or MF_STRING;
+        if subItem.Checked
+        then Flags := Flags or MF_CHECKED;
         AppendMenu(subMenu, Flags, subItem.Command, PChar(subItem.Caption));
       end;
 
@@ -2198,7 +2656,9 @@ begin
       end;
     end;
     MapWindowPoints(Handle, HWND_DESKTOP, Pt, 1);
-    ToolTip.Activate(Pt, Items[FHotIndex].Caption, HA, VA);
+    if (Items[FHotIndex] is TItemAction)
+    then ToolTip.Activate(Pt, TItemAction(Items[FHotIndex]).Description, HA, VA)
+    else ToolTip.Activate(Pt, Items[FHotIndex].Caption, HA, VA);
   end
   else begin
     ToolTip.Cancel;
@@ -2526,8 +2986,22 @@ begin
       end;
     { Delayed auto show (timer) }
     WM_MOUSEACTIVATE:
-      // remember the window in front before the bar gets activated
-      FForegroundAtMouseDown := GetForegroundWindow;
+      begin
+        // remember the window in front before the bar gets activated
+        FForegroundAtMouseDown := GetForegroundWindow;
+        if not IsOurWindow(FForegroundAtMouseDown)
+        then FLastForeignWnd := FForegroundAtMouseDown;
+      end;
+    WM_MOUSEWHEEL:
+      // Ctrl + mouse wheel: next / previous profile
+      if (GetKeyState(VK_CONTROL) < 0)
+      then begin
+        if (SmallInt(Msg.WParamHi) < 0)
+        then CycleProfile(1)
+        else CycleProfile(-1);
+        Msg.Result := 0;
+        Exit;
+      end;
     WM_TIMER:
       begin
         case Msg.WParam of
@@ -2551,6 +3025,11 @@ begin
           TIMER_RUNNING:
             begin
               UpdateRunningState;
+              Exit;
+            end;
+          TIMER_FOREGROUND:
+            begin
+              CheckForeground;
               Exit;
             end;
           TIMER_THUMBS:
@@ -2765,7 +3244,7 @@ begin
     td.Caption := ' ' + APP_NAME_LINKBAR;
     td.MainIcon := tdiNone;
     td.Title := Format( L10NFind('Delete.Title', 'You remove the linkbar "%s"'), [PanelName] );
-    td.Text := Format( L10NFind('Delete.Text', 'Working directory: %s'), [WorkDir] );
+    td.Text := Format( L10NFind('Delete.Text', 'Working directory: %s'), [FLinksBaseDir] );
     td.VerificationText := L10NFind('Delete.Verification', 'Delete working directory') + Format('%*s', [24, ' ']);
     td.CommonButtons := [tcbOk, tcbCancel];
     td.DefaultButton := tcbCancel;
@@ -2778,7 +3257,7 @@ begin
       if (tfVerificationFlagChecked in td.Flags)
       then begin
         StopDirWatch;
-        SHDeleteOp(Handle, WorkDir, True);
+        SHDeleteOp(Handle, FLinksBaseDir, True);
       end;
       PostQuitMessage(0);
     end;

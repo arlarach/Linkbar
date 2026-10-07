@@ -21,8 +21,10 @@ type
      TKind = (None, Shortcut, Separator);
   private
     FKind: TKind;
+  protected
     FBitmap: HBITMAP;                                                           // Shortcut icon
     FBitmapZoom: HBITMAP;                                                       // Bigger icon for the magnification effect
+  private
     Shield: Boolean;                                                            // Have shild overlay
     BitBucket: Boolean;                                                         // Is bitbucket
   public
@@ -141,13 +143,18 @@ type
     front (APrevForeground), or cycle through its windows. False = no window }
   function ActivateProgram(const AExePath: string; APrevForeground: HWND): Boolean;
 
+  { Group background color, stored as "#RRGGBB" in "<group>\color" }
+  function ReadGroupColor(const AFolder: string; out AColor: TColor): Boolean;
+  { clNone = back to the default color }
+  procedure WriteGroupColor(const AFolder: string; const AColor: TColor);
+
 
 implementation
 
 uses
   Winapi.ActiveX, Winapi.ShellAPI, Winapi.KnownFolders,
   System.Win.ComObj, System.Types, System.Math, Winapi.Dwmapi,
-  Linkbar.OS, Linkbar.Consts, Linkbar.Shell, ExplorerMenu;
+  Linkbar.OS, Linkbar.Consts, Linkbar.Shell, ExplorerMenu, Linkbar.Actions;
 
 var FKnownFolderManager: IKnownFolderManager;
 
@@ -491,6 +498,8 @@ function CreateItemForFile(const AFileName: string): TItemShortcut;
 begin
   if TItemGroup.IsGroupFile(AFileName)
   then Result := TItemGroup.Create
+  else if IsActionFile(AFileName)
+  then Result := TItemAction.Create
   else Result := TItemShortcut.Create;
 end;
 
@@ -575,6 +584,66 @@ begin
   then Caption := ChangeFileExt(ExtractFileName(ExcludeTrailingPathDelimiter(AFileName)), '');
 end;
 
+{ ---------- group color ---------- }
+
+function ReadGroupColor(const AFolder: string; out AColor: TColor): Boolean;
+var
+  sl: TStringList;
+  s: string;
+  v: Integer;
+  fn: string;
+begin
+  Result := False;
+  AColor := clNone;
+  fn := IncludeTrailingPathDelimiter(AFolder) + GROUPCOLOR_FILE_NAME;
+  if not FileExists(fn)
+  then Exit;
+  sl := TStringList.Create;
+  try
+    try
+      sl.LoadFromFile(fn);
+    except
+      Exit;
+    end;
+    if (sl.Count = 0) then Exit;
+    s := Trim(sl[0]);
+    if (s <> '') and (s[1] = '#') then Delete(s, 1, 1);
+    if (Length(s) <> 6) or (not TryStrToInt('$' + s, v))
+    then Exit;
+    // #RRGGBB -> TColor ($00BBGGRR)
+    AColor := TColor(RGB((v shr 16) and $FF, (v shr 8) and $FF, v and $FF));
+    Result := True;
+  finally
+    sl.Free;
+  end;
+end;
+
+procedure WriteGroupColor(const AFolder: string; const AColor: TColor);
+var
+  sl: TStringList;
+  fn: string;
+  c: Cardinal;
+begin
+  fn := IncludeTrailingPathDelimiter(AFolder) + GROUPCOLOR_FILE_NAME;
+  if (AColor = clNone) or (AColor = clDefault)
+  then begin
+    System.SysUtils.DeleteFile(fn);
+    Exit;
+  end;
+  c := ColorToRGB(AColor);
+  sl := TStringList.Create;
+  try
+    sl.Add(Format('#%.2X%.2X%.2X', [GetRValue(c), GetGValue(c), GetBValue(c)]));
+    try
+      sl.SaveToFile(fn);
+    except
+      // read-only folder: ignore
+    end;
+  finally
+    sl.Free;
+  end;
+end;
+
 { Group icon: rounded translucent square with up to 4 mini icons (2x2) }
 function CreateGroupIcon(const AFolder: string; const AIconSize: Integer): HBITMAP;
 var
@@ -584,7 +653,9 @@ var
   x, y, i, n, pad, cell, radius: Integer;
   fx, fy, dx, dy, d, cov, baseA: Double;
   a, c: Cardinal;
-  white: Boolean;
+  white, custom: Boolean;
+  gc: TColor;
+  cr, cg, cb: Cardinal;
   files: TArray<string>;
   dc, srcDc: HDC;
   old, oldSrc: HGDIOBJ;
@@ -617,6 +688,17 @@ begin
   radius := AIconSize div 4;
   if (radius < 2) then radius := 2;
 
+  // Custom group color: almost opaque tile of that color
+  custom := ReadGroupColor(AFolder, gc);
+  cr := 0; cg := 0; cb := 0;
+  if custom
+  then begin
+    baseA := 0.90;
+    cr := GetRValue(Cardinal(gc));
+    cg := GetGValue(Cardinal(gc));
+    cb := GetBValue(Cardinal(gc));
+  end;
+
   px := bits;
   for y := 0 to AIconSize-1 do
     for x := 0 to AIconSize-1 do
@@ -634,10 +716,14 @@ begin
       if (cov < 0) then cov := 0;
       if (cov > 1) then cov := 1;
       a := Cardinal(Round(255 * baseA * cov));
-      if white
-      then c := a
-      else c := 0;
-      px^ := (a shl 24) or (c shl 16) or (c shl 8) or c;
+      if custom
+      then px^ := (a shl 24) or (((cr * a) div 255) shl 16) or (((cg * a) div 255) shl 8) or ((cb * a) div 255)
+      else begin
+        if white
+        then c := a
+        else c := 0;
+        px^ := (a shl 24) or (c shl 16) or (c shl 8) or c;
+      end;
       Inc(px);
     end;
 

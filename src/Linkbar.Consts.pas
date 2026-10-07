@@ -49,8 +49,12 @@ const
   ES_ARRAY: array[0..2] of string = ('.lnk', '.url', '.website');
   // Icon groups: sub-folder named "<name>.group" inside the links folder
   ES_GROUP = '.group';
-  // Everything shown on the bar (shortcuts + groups)
-  ES_ITEMS_ARRAY: array[0..3] of string = ('.lnk', '.url', '.website', ES_GROUP);
+  // Action buttons (keyboard shortcut / text): "<name>.lbaction"
+  ES_ACTION = '.lbaction';
+  // Everything shown on the bar (shortcuts + groups + action buttons)
+  ES_ITEMS_ARRAY: array[0..4] of string = ('.lnk', '.url', '.website', ES_GROUP, ES_ACTION);
+  // Profiles: "<links folder>\profiles\<name>\"
+  PROFILES_DIR_NAME = 'profiles';
 
   CLK_LANG     = 'l';
   CLK_FILE     = 'f';
@@ -117,6 +121,7 @@ const
   DEF_BAR_STYLE                 = 0;    // 0 = normal (screen edge), 1 = dock (Mac-like)
   DEF_ZOOM                      = 100;  // magnification in %, 100 = off
   DEF_DOCK_POS                  = 500;  // dock position along the edge, 0..1000 (500 = centered)
+  DEF_HIDE_FULLSCREEN           = False;
   ZOOM_MIN                      = 100;
   ZOOM_MAX                      = 200;
   BAR_STYLE_NORMAL              = 0;
@@ -164,6 +169,8 @@ const
   INI_BAR_STYLE                 = 'barstyle';
   INI_ZOOM                      = 'zoom';
   INI_DOCK_POS                  = 'dockpos';
+  INI_PROFILE                   = 'profile';
+  INI_HIDE_FULLSCREEN           = 'hidefullscreen';
   INI_ICON_SIZE                 = 'iconsize';
   INI_ISLIGHT                   = 'usestylecombined';
   INI_ITEM_ORDER                = 'itemorder';
@@ -193,6 +200,7 @@ const
   INI_SEPARATOR_STYLE           = 'separatorstyle';
 
   LINKSLIST_FILE_NAME  = 'list';
+  GROUPCOLOR_FILE_NAME = 'color';                                              // group background color (#RRGGBB)
 
 var
   GlobalLayout:           TPanelLayout = DEF_ITEMS_ALIGN;

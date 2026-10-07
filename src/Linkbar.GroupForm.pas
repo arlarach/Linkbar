@@ -13,7 +13,7 @@ uses
   Winapi.Windows, Winapi.Messages,
   System.SysUtils, System.Classes, System.Types, System.UITypes,
   System.Generics.Collections,
-  Vcl.Graphics, Vcl.Controls, Vcl.Forms,
+  Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Menus,
   LBToolbar, Linkbar.Consts;
 
 type
@@ -46,6 +46,13 @@ type
     FRadius: Integer;
     FBgColor, FTextColor, FBorderColor: TColor;
     FHotColor: Cardinal;
+    FColorTarget: string;     // folder whose color is being changed (menu)
+    FOnGroupChanged: TNotifyEvent;
+    procedure ApplyGroupColors;
+    procedure DoSetColor(Sender: TObject);
+    procedure AddColorMenu(AMenu: TPopupMenu; const ATarget: string);
+    procedure DoChanged;
+    function GetRootFolder: string;
     function Scale(const AValue: Integer): Integer;
     function CellRect(const AIndex: Integer): TRect;
     function IndexAt(const APoint: TPoint): Integer;
@@ -80,12 +87,16 @@ type
     destructor Destroy; override;
     procedure PopupAt(const AItemRect: TRect; const AAlign: TPanelAlign);
     property OnDragOut: TGroupDragOutEvent read FOnDragOut write FOnDragOut;
+    { The group content/look changed (bar must redraw the group icon) }
+    property OnGroupChanged: TNotifyEvent read FOnGroupChanged write FOnGroupChanged;
+    { Group opened from the bar (top of the navigation stack) }
+    property RootFolder: string read GetRootFolder;
   end;
 
 implementation
 
 uses
-  System.Math, GdiPlus, Vcl.Menus, Vcl.Dialogs, Winapi.ShellAPI,
+  System.Math, GdiPlus, Vcl.Dialogs, Winapi.ShellAPI,
   ExplorerMenu, Linkbar.Theme, Linkbar.OS, Linkbar.L10n;
 
 { TFormGroup }
@@ -111,24 +122,9 @@ begin
   DoubleBuffered := True;
   Font.Assign(Screen.IconFont);
 
-  // Colors (follow Linkbar color mode)
-  if (GlobalLook = ELookLight)
-  then begin
-    FBgColor := $00F3F3F3;
-    FTextColor := clBlack;
-    FBorderColor := $00D0D0D0;
-    FHotColor := $14000000; // black 8%
-  end
-  else begin
-    FBgColor := $002B2B2B;
-    FTextColor := clWhite;
-    FBorderColor := $00454545;
-    FHotColor := $1AFFFFFF; // white 10%
-  end;
-  Color := FBgColor;
-
   FItems := TObjectList<TItemShortcut>.Create(True);
   FStack := TStringList.Create;
+  ApplyGroupColors;
   LoadItems;
   CalcLayout;
 end;
@@ -179,6 +175,184 @@ begin
   end;
 end;
 
+const
+  { Preset group colors (TColor = $00BBGGRR) }
+  GROUP_COLORS: array[0..8] of TColor = (
+    $00D77800,  // blue
+    $00BC9900,  // teal
+    $00107C10,  // green
+    $0000B9FF,  // yellow
+    $000C63F7,  // orange
+    $001C2BC4,  // red
+    $008C00E3,  // pink
+    $00981788,  // purple
+    $007E7969); // gray
+  GROUP_COLOR_KEYS: array[0..8] of string = (
+    'Blue', 'Teal', 'Green', 'Yellow', 'Orange', 'Red', 'Pink', 'Purple', 'Gray');
+  COLOR_TAG_DEFAULT = -1;
+  COLOR_TAG_CUSTOM  = -2;
+
+{ Colors: the group's own color if it has one, otherwise follow Linkbar color mode }
+procedure TFormGroup.ApplyGroupColors;
+var gc: TColor;
+    c: Cardinal;
+    r, g, b, lum: Integer;
+
+  function Mix(const AColor: Cardinal; const ATo, APercent: Integer): TColor;
+  begin
+    Result := TColor(RGB(
+      GetRValue(AColor) + (ATo - GetRValue(AColor)) * APercent div 100,
+      GetGValue(AColor) + (ATo - GetGValue(AColor)) * APercent div 100,
+      GetBValue(AColor) + (ATo - GetBValue(AColor)) * APercent div 100));
+  end;
+
+begin
+  if ReadGroupColor(FFolder, gc)
+  then begin
+    c := ColorToRGB(gc);
+    r := GetRValue(c); g := GetGValue(c); b := GetBValue(c);
+    lum := (r * 299 + g * 587 + b * 114) div 1000;
+    FBgColor := TColor(c);
+    if (lum >= 150)
+    then begin
+      // light color: dark text
+      FTextColor := clBlack;
+      FBorderColor := Mix(c, 0, 25);
+      FHotColor := $1A000000;
+    end
+    else begin
+      FTextColor := clWhite;
+      FBorderColor := Mix(c, 255, 25);
+      FHotColor := $26FFFFFF;
+    end;
+  end
+  else if (GlobalLook = ELookLight)
+  then begin
+    FBgColor := $00F3F3F3;
+    FTextColor := clBlack;
+    FBorderColor := $00D0D0D0;
+    FHotColor := $14000000; // black 8%
+  end
+  else begin
+    FBgColor := $002B2B2B;
+    FTextColor := clWhite;
+    FBorderColor := $00454545;
+    FHotColor := $1AFFFFFF; // white 10%
+  end;
+  Color := FBgColor;
+end;
+
+function TFormGroup.GetRootFolder: string;
+begin
+  if (FStack.Count > 0)
+  then Result := FStack.Names[0]
+  else Result := FFolder;
+end;
+
+procedure TFormGroup.DoChanged;
+begin
+  if Assigned(FOnGroupChanged)
+  then FOnGroupChanged(Self);
+end;
+
+{ "Background color" submenu: presets with a color swatch, custom, default }
+procedure TFormGroup.AddColorMenu(AMenu: TPopupMenu; const ATarget: string);
+var
+  sub, mi: TMenuItem;
+  i, sz: Integer;
+  cur: TColor;
+  hasColor: Boolean;
+
+  procedure Swatch(AItem: TMenuItem; AColor: TColor);
+  begin
+    AItem.Bitmap.SetSize(sz, sz);
+    AItem.Bitmap.PixelFormat := pf24bit;
+    AItem.Bitmap.Canvas.Brush.Color := clFuchsia; // transparent key
+    AItem.Bitmap.Canvas.FillRect(Rect(0, 0, sz, sz));
+    AItem.Bitmap.Canvas.Brush.Color := AColor;
+    AItem.Bitmap.Canvas.Pen.Color := $00808080;
+    AItem.Bitmap.Canvas.RoundRect(1, 1, sz - 1, sz - 1, sz div 2, sz div 2);
+    AItem.Bitmap.Transparent := True;
+    AItem.Bitmap.TransparentColor := clFuchsia;
+  end;
+
+begin
+  FColorTarget := ATarget;
+  hasColor := ReadGroupColor(ATarget, cur);
+  sz := Scale(16);
+
+  sub := TMenuItem.Create(AMenu);
+  sub.Caption := L10NFind('Group.Color', 'Background color');
+  AMenu.Items.Add(sub);
+
+  for i := Low(GROUP_COLORS) to High(GROUP_COLORS) do
+  begin
+    mi := TMenuItem.Create(AMenu);
+    mi.Caption := L10NFind('Group.Color' + GROUP_COLOR_KEYS[i], GROUP_COLOR_KEYS[i]);
+    mi.Tag := i;
+    mi.Checked := hasColor and (ColorToRGB(cur) = ColorToRGB(GROUP_COLORS[i]));
+    Swatch(mi, GROUP_COLORS[i]);
+    mi.OnClick := DoSetColor;
+    sub.Add(mi);
+  end;
+
+  sub.NewBottomLine;
+
+  mi := TMenuItem.Create(AMenu);
+  mi.Caption := L10NFind('Group.ColorCustom', 'Custom...');
+  mi.Tag := COLOR_TAG_CUSTOM;
+  if hasColor then Swatch(mi, cur);
+  mi.OnClick := DoSetColor;
+  sub.Add(mi);
+
+  mi := TMenuItem.Create(AMenu);
+  mi.Caption := L10NFind('Group.ColorDefault', 'Default');
+  mi.Tag := COLOR_TAG_DEFAULT;
+  mi.Checked := not hasColor;
+  mi.OnClick := DoSetColor;
+  sub.Add(mi);
+end;
+
+procedure TFormGroup.DoSetColor(Sender: TObject);
+var
+  tag: Integer;
+  newColor, cur: TColor;
+  dlg: TColorDialog;
+begin
+  if (FColorTarget = '') then Exit;
+  tag := TMenuItem(Sender).Tag;
+  case tag of
+    COLOR_TAG_DEFAULT: newColor := clNone;
+    COLOR_TAG_CUSTOM:
+    begin
+      dlg := TColorDialog.Create(Self);
+      FModalOpen := True;
+      try
+        dlg.Options := [cdFullOpen, cdAnyColor];
+        if ReadGroupColor(FColorTarget, cur)
+        then dlg.Color := cur
+        else dlg.Color := FBgColor;
+        if not dlg.Execute(Handle)
+        then Exit;
+        newColor := dlg.Color;
+      finally
+        dlg.Free;
+        FModalOpen := False;
+        SetForegroundWindow(Handle);
+      end;
+    end;
+    else
+      if (tag >= Low(GROUP_COLORS)) and (tag <= High(GROUP_COLORS))
+      then newColor := GROUP_COLORS[tag]
+      else Exit;
+  end;
+
+  WriteGroupColor(FColorTarget, newColor);
+  if SameText(ExcludeTrailingPathDelimiter(FColorTarget), ExcludeTrailingPathDelimiter(FFolder))
+  then ApplyGroupColors;
+  Reload; // sub-group icons show their color too
+end;
+
 { Save current order to "<group>\list" (the group icon follows it too) }
 procedure TFormGroup.SaveOrder;
 var
@@ -197,14 +371,17 @@ begin
   finally
     sl.Free;
   end;
+  DoChanged;
 end;
 
 procedure TFormGroup.Reload;
 begin
+  ApplyGroupColors;
   LoadItems;
   CalcLayout;
   Reposition;
   Invalidate;
+  DoChanged;
 end;
 
 procedure TFormGroup.NavigateInto(const AIndex: Integer);
@@ -639,6 +816,8 @@ begin
     mi.Tag := -1;
     mi.OnClick := DoOpenFolder;
     menu.Items.Add(mi);
+    menu.Items.NewBottomLine;
+    AddColorMenu(menu, FFolder);
     pt := ClientToScreen(Point(X, Y));
     menu.Popup(pt.X, pt.Y);
     Exit;
@@ -659,6 +838,8 @@ begin
     mi.Tag := i;
     mi.OnClick := DoOpenFolder;
     menu.Items.Add(mi);
+    menu.Items.NewBottomLine;
+    AddColorMenu(menu, ExcludeTrailingPathDelimiter(FItems[i].FileName));
     pt := ClientToScreen(Point(X, Y));
     menu.Popup(pt.X, pt.Y);
     Exit;
