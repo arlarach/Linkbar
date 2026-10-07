@@ -649,8 +649,7 @@ begin
   FrmProperties := nil;
   FColorPicker.Free;
   // Undo live preview if not applied (after Apply/OK this re-applies the saved values)
-  if IsWindows10
-  then ThemeSetWindowAccentPolicy10(FLinkbar.Handle, FLinkbar.TransparencyMode, FLinkbar.BackgroundColor);
+  FLinkbar.ApplyWindowAccent;
   PostMessage(FLinkbar.Handle, LM_DOAUTOHIDE, 0, 0);
 end;
 
@@ -809,6 +808,7 @@ begin
   SetAutoStart(chbAutoStart.Checked);
   FLinkbar.ZoomPercent := trbZoom.Position;
   FLinkbar.BarStyle := cbbBarStyle.ItemIndex;
+  FLinkbar.ApplyWindowAccent; // dock: repaint with the new color
 
   FLinkbar.UpdateItemSizes;
 
@@ -922,6 +922,9 @@ procedure TFrmProperties.PreviewBackground;
 begin
   if (not FCanChanged) or (not IsWindows10)
      or (not chbUseBkgndColor.Checked)
+  then Exit;
+  // the dock paints its own background: no accent preview (shown after Apply)
+  if (FLinkbar.BarStyle = BAR_STYLE_DOCK)
   then Exit;
   ThemeSetWindowAccentPolicy10(FLinkbar.Handle,
     TTransparencyMode(cbbTransparencyMode.ItemIndex), FBackgroundColor);

@@ -169,6 +169,7 @@ type
     procedure DrawItemsZoomed;
     procedure RedrawZoom;
     procedure SlideDock(const ACursor: TPoint);
+    procedure DrawDockBackground(const ABitmap: THBitmap; const AClipRect: TRect);
     procedure SaveDockPos;
     function SysWidgetLength(const AVertical: Boolean): Integer;
     function SysWidgetRect(const AWidth, AHeight: Integer): TRect;
@@ -284,6 +285,7 @@ type
     property ModernStyle: Boolean read FModernStyle write SetModernStyle;
     property ShowSysWidgets: Boolean read FShowSysWidgets write SetShowSysWidgets;
     property BarStyle: Integer read FBarStyle write SetBarStyle;
+    procedure ApplyWindowAccent;
     property ZoomPercent: Integer read FZoomPercent write SetZoomPercent;
     property HotIndex: Integer read FHotIndex write SetHotIndex;
     property HotkeyInfo: THotkeyInfo read FHotkeyInfo write SetHotkeyInfo;
@@ -502,6 +504,13 @@ procedure TLinkbarWcl.DrawBackground(const ABitmap: THBitmap;
   const AClipRect: TRect);
 var params: TDrawBackgroundParams;
 begin
+  // Dock: anti-aliased rounded background painted by Linkbar itself
+  if IsDock
+  then begin
+    DrawDockBackground(ABitmap, AClipRect);
+    Exit;
+  end;
+
   params.Bitmap := ABitmap;
   params.Align := Align;
   params.ClipRect := AClipRect;
@@ -859,9 +868,7 @@ var blurEnabled: Boolean;
 begin
   if IsWindows10
   then begin
-    if (FAutoHiden and FAutoHideTransparency)
-    then ThemeSetWindowAccentPolicy10(Handle, tmDisabled, 0)
-    else ThemeSetWindowAccentPolicy10(Handle, FTransparencyMode, BackgroundColor);
+    ApplyWindowAccent;
   end
   else begin
     blurEnabled := not (FAutoHiden and FAutoHideTransparency);
@@ -1066,6 +1073,9 @@ begin
   if IsWindows10
   then ThemeSetWindowAttribute10(Handle, FTransparencyMode, BackgroundColor)
   else ThemeSetWindowAttribute78(Handle);
+  // Dock: its own anti-aliased background, no DWM accent (that one has jagged corners)
+  if IsWindows10 and IsDock
+  then ThemeSetWindowAccentPolicy10(Handle, tmDisabled, 0);
 
   ThemeInitData(Handle, FIsLightStyle);
 
@@ -2469,7 +2479,7 @@ begin
         UpdateBackgroundColor;
 
         if IsWindows10
-        then ThemeSetWindowAccentPolicy10(Handle, FTransparencyMode, BackgroundColor);
+        then ApplyWindowAccent;
 
         // In Windows 8+ theme color may changed smoothly
         HotIndex := ITEM_NONE;
@@ -3226,7 +3236,7 @@ begin
   then Exit;
   FTransparencyMode := AValue;
   UpdateBackgroundColor;
-  ThemeSetWindowAccentPolicy10(Handle, FTransparencyMode, BackgroundColor);
+  ApplyWindowAccent;
 end;
 
 procedure TLinkbarWcl.SetLook(AValue: TLook);
@@ -3242,7 +3252,7 @@ begin
 
   FLook := AValue;
   UpdateBackgroundColor;
-  ThemeSetWindowAccentPolicy10(Handle, FTransparencyMode, BackgroundColor);
+  ApplyWindowAccent;
 end;
 
 procedure TLinkbarWcl.SetModernStyle(AValue: Boolean);
@@ -3498,17 +3508,114 @@ end;
 
 { Rounded corners for the dock, plain rectangle otherwise }
 procedure TLinkbarWcl.ApplyDockRegion(const AWidth, AHeight: Integer);
-var
-  rgn: HRGN;
-  d: Integer;
 begin
-  if IsDock
+  // The dock shape comes from the per-pixel alpha of its own background
+  // (smooth corners); a window region would give jagged corners
+  SetWindowRgn(Handle, 0, True);
+end;
+
+{ Window background effect (Windows 10+). The dock paints its own background }
+procedure TLinkbarWcl.ApplyWindowAccent;
+begin
+  if not IsWindows10
+  then Exit;
+  if IsDock or (FAutoHiden and FAutoHideTransparency)
+  then ThemeSetWindowAccentPolicy10(Handle, tmDisabled, 0)
+  else ThemeSetWindowAccentPolicy10(Handle, FTransparencyMode, BackgroundColor);
+
+  // dock background uses the background color: repaint
+  if IsDock and Assigned(BitmapPanel)
+     and (BitmapPanel.Width > 0) and (BitmapPanel.Height > 0)
   then begin
-    d := Min(ScaleDimension(28), Min(AWidth, AHeight));
-    rgn := CreateRoundRectRgn(0, 0, AWidth + 1, AHeight + 1, d, d);
-    SetWindowRgn(Handle, rgn, True); // the system owns rgn now
-  end
-  else SetWindowRgn(Handle, 0, True);
+    RecreateMainBitmap(BitmapPanel.Width, BitmapPanel.Height);
+    UpdateWindow;
+  end;
+end;
+
+{ Dock background: rounded rectangle with anti-aliased edges and a thin
+  border, written directly as premultiplied pixels (correct alpha) }
+procedure TLinkbarWcl.DrawDockBackground(const ABitmap: THBitmap; const AClipRect: TRect);
+
+  // 0..1 coverage of pixel center (fx, fy) by a rounded rect
+  function Coverage(fx, fy: Double; const R: TRect; Radius: Double): Double;
+  var dx, dy: Double;
+  begin
+    if (fx < R.Left) or (fx > R.Right) or (fy < R.Top) or (fy > R.Bottom)
+    then begin
+      // outside the box: soft edge of half a pixel
+      dx := Max(Max(R.Left - fx, fx - R.Right), 0);
+      dy := Max(Max(R.Top - fy, fy - R.Bottom), 0);
+      Exit(EnsureRange(0.5 - Sqrt(dx*dx + dy*dy), 0, 1));
+    end;
+    dx := 0;
+    if (fx < R.Left + Radius) then dx := R.Left + Radius - fx
+    else if (fx > R.Right - Radius) then dx := fx - (R.Right - Radius);
+    dy := 0;
+    if (fy < R.Top + Radius) then dy := R.Top + Radius - fy
+    else if (fy > R.Bottom - Radius) then dy := fy - (R.Bottom - Radius);
+    if (dx = 0) or (dy = 0)
+    then begin
+      // straight edges: distance to the nearest side
+      Result := EnsureRange(Min(Min(fx - R.Left, R.Right - fx), Min(fy - R.Top, R.Bottom - fy)) + 0.5, 0, 1);
+    end
+    else Result := EnsureRange(Radius - Sqrt(dx*dx + dy*dy) + 0.5, 0, 1);
+  end;
+
+var
+  color, a, ba, br, bg, bb, cr, cg, cb: Cardinal;
+  outer, inner, clip: TRect;
+  radius, covO, covI, fa, fb: Double;
+  x, y: Integer;
+  row: PByte;
+  px: PCardinal;
+  oa, orr, og, ob: Double;
+begin
+  if (ABitmap.Bits = nil)
+  then Exit;
+
+  // fill color (ARGB); opaque mode = fully opaque
+  color := BackgroundColor;
+  a := color shr 24;
+  if (FTransparencyMode = tmOpaque) then a := 255;
+  if (a < 8) then a := 8; // keep it clickable
+  cr := (color shr 16) and $FF;
+  cg := (color shr 8) and $FF;
+  cb := color and $FF;
+
+  // thin border: light on dark, dark on light
+  if (GlobalLook = ELookLight)
+  then begin ba := 50; br := 0; bg := 0; bb := 0; end
+  else begin ba := 60; br := 255; bg := 255; bb := 255; end;
+
+  outer := Rect(0, 0, ABitmap.Width, ABitmap.Height);
+  inner := Rect(1, 1, ABitmap.Width - 1, ABitmap.Height - 1);
+  radius := Min(ScaleDimension(14), Min(ABitmap.Width, ABitmap.Height) div 2);
+
+  clip := AClipRect;
+  if not clip.IntersectsWith(outer) then Exit;
+  clip.Intersect(outer);
+
+  for y := clip.Top to clip.Bottom - 1 do
+  begin
+    row := PByte(ABitmap.Bits) + y * ABitmap.Pitch;
+    for x := clip.Left to clip.Right - 1 do
+    begin
+      px := PCardinal(row + x * 4);
+      covO := Coverage(x + 0.5, y + 0.5, outer, radius);
+      covI := Coverage(x + 0.5, y + 0.5, inner, Max(radius - 1, 0));
+      fa := (a / 255) * covI;          // fill alpha
+      fb := (ba / 255) * Max(covO - covI, 0); // border alpha
+      // composite border over fill (premultiplied)
+      oa := fb + fa * (1 - fb);
+      orr := br * fb + cr * fa * (1 - fb);
+      og := bg * fb + cg * fa * (1 - fb);
+      ob := bb * fb + cb * fa * (1 - fb);
+      px^ := (Cardinal(Round(oa * 255)) shl 24)
+          or (Cardinal(Round(orr)) shl 16)
+          or (Cardinal(Round(og)) shl 8)
+          or  Cardinal(Round(ob));
+    end;
+  end;
 end;
 
 { Move the dock along its edge following the mouse (Ctrl+drag) }
@@ -3559,13 +3666,13 @@ begin
   if IsDock and AutoHide
   then AutoHide := False;
 
+  ApplyWindowAccent;
   if Assigned(oAppBar)
   then begin
     oAppBar.Floating := IsDock;
     oAppBar.AppBarPosChanged;
   end;
-  if not IsDock
-  then SetWindowRgn(Handle, 0, True);
+  SetWindowRgn(Handle, 0, True);
 end;
 
 procedure TLinkbarWcl.SetZoomPercent(AValue: Integer);

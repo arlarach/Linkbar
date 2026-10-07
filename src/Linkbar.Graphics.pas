@@ -43,6 +43,8 @@ type
     property Width: Integer read FWidth;
     property Height: Integer read FHeight;
     property Bound: TRect read GetBound;
+    property Bits: Pointer read FBits;     // top-down 32bpp pixels (premultiplied BGRA)
+    property Pitch: Integer read FPitch;   // bytes per row
   end;
 
 implementation
