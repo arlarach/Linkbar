@@ -18,10 +18,11 @@ uses
   Linkbar.Graphics, Linkbar.Bar.Host, Linkbar.Bar.SaveQueue, Linkbar.Bar.Profiles,
   Linkbar.Bar.SysWidgets, Linkbar.Bar.Collapse, Linkbar.Bar.Fullscreen,
   Linkbar.Bar.Thumbs, Linkbar.Bar.Running, Linkbar.Bar.Launcher,
-  Linkbar.Bar.Pinned, Linkbar.Bar.ActionButtons, Linkbar.Bar.Zoom, Linkbar.Bar.Dock, Linkbar.Bar.DropTarget, Linkbar.Bar.Painter, Linkbar.Bar.PopupMenu, Linkbar.Bar.Config;
+  Linkbar.Bar.Pinned, Linkbar.Bar.ActionButtons, Linkbar.Bar.Zoom, Linkbar.Bar.Dock, Linkbar.Bar.DropTarget, Linkbar.Bar.Painter, Linkbar.Bar.PopupMenu, Linkbar.Bar.Config,
+  Linkbar.Bar.AutoHide;
 
 type
-  TLinkbarWcl = class(TLinkbarCustomFrom, ILinkbarHost, ICollapseHost, IFullscreenHost, IThumbsHost, ILauncherHost, IPinnedHost, IActionButtonsHost, IDockHost, IDropTargetHost)
+  TLinkbarWcl = class(TLinkbarCustomFrom, ILinkbarHost, ICollapseHost, IFullscreenHost, IThumbsHost, ILauncherHost, IPinnedHost, IActionButtonsHost, IDockHost, IDropTargetHost, IAutoHideHost)
     pMenu: TPopupMenu;
     imClose: TMenuItem;
     imProperties: TMenuItem;
@@ -68,6 +69,7 @@ type
     BitmapSelected: THBitmap;
     FDropTarget: TBarDropTarget;  // drop indicator
     FPainter: TBarPainter;        // background, captions and icons
+    FAutoHider: TBarAutoHide;     // auto hide of the bar
     BitmapButton: THBitmap;
     BitmapPanel: THBitmap;
     Items: TLBItemList;
@@ -238,6 +240,12 @@ type
     procedure BarActivate(const AWnd: HWND);
     // IPinnedHost / IActionButtonsHost / common services
     procedure BarPinnedChanged;
+    // IAutoHideHost
+    function BarAutoHideEnabled: Boolean;
+    function BarAutoShowDelay: Integer;
+    procedure BarClearHot;
+    procedure BarPresent(const ABounds: TRect);
+    procedure BarEnableContextMenu(const AEnabled: Boolean);
     // IPainterHost (common bar services)
     function BarButtonBitmap: THBitmap;
     function BarIsLightStyle: Boolean;
@@ -351,15 +359,6 @@ type
     procedure WmHotKey(var Msg: TMessage); message WM_HOTKEY;
     procedure CMDialogKey(var Msg: TCMDialogKey); message CM_DIALOGKEY;
   protected
-    FAutoHiden: Boolean;
-    FCanAutoHide: Boolean;
-    FLockAutoHide: Boolean;
-    FBeforeAutoHideBound: TRect;
-    FAfterAutoHideBound: TRect;
-    procedure DoAutoHide;
-    procedure DoAutoShow;
-    procedure DoDelayedAutoShow;
-    procedure DoDelayedAutoHide(const ADelay: Cardinal);
     procedure OnFormJumplistDestroy(Sender: TObject);
   public
     procedure SaveSettings;
@@ -435,8 +434,6 @@ const
 
   LM_SHELLNOTIFY = WM_USER + 88;
   LM_TASKBARMODE = WM_USER + 89;
-  TIMER_AUTO_SHOW = 15;
-  TIMER_AUTO_HIDE = 16;
   TIMER_SYS_WIDGETS = 17;
   TIMER_RUNNING = 18;
   TIMER_FOREGROUND = 20;
@@ -734,7 +731,7 @@ begin
   h := ABounds.Height;
 
   // Draw
-  if (FAutoHiden)
+  if (FAutoHider.Hidden)
   then begin
     // Hidden
 
@@ -842,7 +839,7 @@ begin
     ApplyWindowAccent;
   end
   else begin
-    blurEnabled := not (FAutoHiden and FConfig.AutoHideTransparency);
+    blurEnabled := not (FAutoHider.Hidden and FConfig.AutoHideTransparency);
     if (IsWindows8And8Dot1 and not FConfig.EnableAeroGlass)
     then blurEnabled := False;
     ThemeUpdateBlur(Handle, blurEnabled);
@@ -1008,6 +1005,7 @@ procedure TLinkbarWcl.FormCreate(Sender: TObject);
 begin
   TMenuBorderHook.Install;
   FProfiles := TProfileManager.Create;
+  FAutoHider := TBarAutoHide.Create(Self);
   FSaveQueue := TFileSaveQueue.Create;
   FSaveQueue.OnScheduleRetry := SaveRetryScheduled;
   FSaveQueue.OnFailed := ShowSaveFailed;
@@ -1080,8 +1078,8 @@ begin
 
   Color := 0;
   FrmProperties := nil;
-  FLockAutoHide := False;
-  FCanAutoHide := True;
+  FAutoHider.Locked := False;
+  FAutoHider.CanAutoHide := True;
 
   LoadSettings;
 
@@ -1121,7 +1119,7 @@ begin
 
   CreateLinkbarTasksJumplist;
 
-  DoDelayedAutoHide(1000);
+  FAutoHider.DelayedHide(1000);
 
   // Taskbar icon mode: hide the bar once the form has been shown
   if IsTaskbarIcon
@@ -1161,6 +1159,7 @@ begin
   FreeAndNil(FSaveQueue);
   FreeAndNil(FActionEditor);
   FreeAndNil(FPainter);
+  FreeAndNil(FAutoHider);
   FreeAndNil(FDropTarget);
   FreeAndNil(FDock);
   FreeAndNil(FZoom);
@@ -1197,7 +1196,7 @@ end;
 procedure TLinkbarWcl.FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
 begin
   if AutoHide
-     and FAutoHiden
+     and FAutoHider.Hidden
   then begin
     Key := 0;
     Exit;
@@ -1219,8 +1218,8 @@ begin
       begin
         if (HotIndex = ITEM_NONE)
         then begin
-          FCanAutoHide := True;
-          DoAutoHide;
+          FAutoHider.CanAutoHide := True;
+          FAutoHider.Hide;
         end
         else HotIndex := ITEM_NONE;
         Exit;
@@ -1370,7 +1369,7 @@ end;
 procedure TLinkbarWcl.FormMouseDown(Sender: TObject; Button: TMouseButton;
   Shift: TShiftState; X, Y: Integer);
 begin
-  if AutoHide and FAutoHiden
+  if AutoHide and FAutoHider.Hidden
   then Exit;
 
   FCollapse.CancelAuto;  // the bar is being used
@@ -1438,7 +1437,7 @@ begin
   then Exit;
   prevX := X; prevY := Y;
 
-  if FAutoHiden then Exit;
+  if FAutoHider.Hidden then Exit;
 
   if Self.IsDragDrop then Exit;
   if FDropTarget.Position <> ITEM_NONE then Exit;
@@ -1523,7 +1522,7 @@ end;
 procedure TLinkbarWcl.FormMouseUp(Sender: TObject; Button: TMouseButton;
   Shift: TShiftState; X, Y: Integer);
 begin
-  if FAutoHiden
+  if FAutoHider.Hidden
   then begin
     if ( (AutoShowMode = EAutoShowModeMouseClickLeft) and (Button =  mbLeft) )
        or
@@ -1531,8 +1530,8 @@ begin
     then begin
       if PtInRect(Rect(0,0,Width,Height), Point(X, Y))
       then begin
-        FCanAutoHide := False;
-        DoAutoShow;
+        FAutoHider.CanAutoHide := False;
+        FAutoHider.Show;
       end;
     end;
     Exit;
@@ -1563,7 +1562,7 @@ begin
     Exit;
   end;
 
-  FCanAutoHide := False;
+  FAutoHider.CanAutoHide := False;
   FMousePosUp := Point(X, Y);
   case Button of
     mbLeft:
@@ -1669,7 +1668,7 @@ begin
   form.OnDragOut := DragExternalFile;
   form.OnGroupChanged := GroupChanged;
   FLockHotIndex := True;
-  FLockAutoHide := True;
+  FAutoHider.Locked := True;
   form.PopupAt(itemRect, Align);
 end;
 
@@ -1706,12 +1705,12 @@ begin
     Exit;
   end;
 
-  FLockAutoHide := True;
+  FAutoHider.Locked := True;
   dlg := TRenamingWCl.Create(Self);
   dlg.Pidl := Items[AIndex].Pidl;
   dlg.ShowModal;
   dlg.Free;
-  FLockAutoHide := False;
+  FAutoHider.Locked := False;
 end;
 
 { Drag a file that is not a bar item (an icon dragged out of a group window).
@@ -1979,13 +1978,13 @@ procedure TLinkbarWcl.ProfileNewClick(Sender: TObject);
 var name: string;
 begin
   name := '';
-  FLockAutoHide := True;
+  FAutoHider.Locked := True;
   try
     if not InputQuery(L10NFind('Profile.NewTitle', 'New profile'),
                       L10NFind('Profile.NamePrompt', 'Profile name (for example Work):'), name)
     then Exit;
   finally
-    FLockAutoHide := False;
+    FAutoHider.Locked := False;
   end;
   name := Trim(name);
   if not TProfileManager.IsValidName(name)
@@ -2006,13 +2005,13 @@ begin
   if (FProfiles.Current = '') then Exit;
   oldName := FProfiles.Current;
   name := oldName;
-  FLockAutoHide := True;
+  FAutoHider.Locked := True;
   try
     if not InputQuery(L10NFind('Profile.RenameTitle', 'Rename profile'),
                       L10NFind('Profile.NamePrompt', 'Profile name (for example Work):'), name)
     then Exit;
   finally
-    FLockAutoHide := False;
+    FAutoHider.Locked := False;
   end;
   name := Trim(name);
   if not TProfileManager.IsValidName(name) or SameText(name, oldName)
@@ -2036,7 +2035,7 @@ var name: string;
 begin
   if (FProfiles.Current = '') then Exit;
   name := FProfiles.Current;
-  FLockAutoHide := True;
+  FAutoHider.Locked := True;
   try
     if (MessageBox(Handle,
           PChar(Format(L10NFind('Profile.DeleteConfirm',
@@ -2044,7 +2043,7 @@ begin
           PChar(APP_NAME_LINKBAR), MB_ICONQUESTION or MB_YESNO) <> IDYES)
     then Exit;
   finally
-    FLockAutoHide := False;
+    FAutoHider.Locked := False;
   end;
   SwitchProfile('');
   SHDeleteOp(Handle, ExcludeTrailingPathDelimiter(FProfiles.ProfileDir(name)), True);
@@ -2075,13 +2074,13 @@ begin
   oldPath := ExcludeTrailingPathDelimiter(Items[AIndex].FileName);
   newName := Items[AIndex].Caption;
 
-  FLockAutoHide := True;
+  FAutoHider.Locked := True;
   try
     if not InputQuery(L10NFind('Group.RenameTitle', 'Rename group'),
                       L10NFind('Group.RenamePrompt', 'Name:'), newName)
     then Exit;
   finally
-    FLockAutoHide := False;
+    FAutoHider.Locked := False;
   end;
 
   newName := Trim(newName);
@@ -2291,7 +2290,7 @@ begin
   MapWindowPoints(Handle, HWND_DESKTOP, APt, 1);
 
   FLockHotIndex := True;
-  FLockAutoHide := True;
+  FAutoHider.Locked := True;
   try
     ToolTip.Cancel;
     if (FItemPopup = ITEM_NONE)
@@ -2314,7 +2313,7 @@ begin
     then begin
       HotIndex := ITEM_NONE;
     end;
-    FLockAutoHide := False;
+    FAutoHider.Locked := False;
   end;
 end;
 
@@ -2345,9 +2344,9 @@ begin
     then begin
       HotIndex := ITEM_NONE;
     end;
-    FLockAutoHide := False;
-    FCanAutoHide := True;
-    DoAutoHide;
+    FAutoHider.Locked := False;
+    FAutoHider.CanAutoHide := True;
+    FAutoHider.Hide;
   end;
 end;
 
@@ -2367,7 +2366,7 @@ begin
         ToolTip.Cancel;
         form.OnDestroy := OnFormJumplistDestroy;
         FLockHotIndex := True;
-        FLockAutoHide := True;
+        FAutoHider.Locked := True;
         Exit;
       end;
     end;
@@ -2381,7 +2380,7 @@ procedure TLinkbarWcl.FormContextPopup(Sender: TObject; MousePos: TPoint; var Ha
 begin
   Handled := True;
 
-  if FAutoHiden then Exit;
+  if FAutoHider.Hidden then Exit;
 
   var pt := MousePos;
   if (pt.X = -1) and (pt.Y = -1)
@@ -2706,12 +2705,12 @@ begin
     Exit;
   end;
 
-  FBeforeAutoHideBound := Bounds(x, y, w, h);
+  FAutoHider.BeforeBound := Bounds(x, y, w, h);
   RecreateMainBitmap(w, h);
 
-  if (AutoHide and FAutoHiden)
-  then r := FAfterAutoHideBound
-  else r := FBeforeAutoHideBound;
+  if (AutoHide and FAutoHider.Hidden)
+  then r := FAutoHider.AfterBound
+  else r := FAutoHider.BeforeBound;
 
   MoveWindow(Handle, r.Left, r.Top, r.Width, r.Height, False);
   ApplyDockRegion(r.Width, r.Height);
@@ -2832,8 +2831,8 @@ begin
       begin
         {$IFDEF DEBUGUS}DebugusMessage('WM_SETFOCUS');{$ENDIF}
         Msg.Result := 0;
-        FCanAutoHide := False;
-        DoAutoShow;
+        FAutoHider.CanAutoHide := False;
+        FAutoHider.Show;
       end;
     *)
     //WM_WINDOWPOSCHANGED:
@@ -2925,8 +2924,8 @@ begin
         //Msg.Result := 0;
         if (csDestroying in ComponentState)
         then Exit;
-        FCanAutoHide := not Assigned(FrmProperties);
-        DoAutoHide;
+        FAutoHider.CanAutoHide := not Assigned(FrmProperties);
+        FAutoHider.Hide;
         Exit;
       end;
     { Display stste changed (count/size/rotate) }
@@ -2965,13 +2964,15 @@ begin
           TIMER_AUTO_SHOW:
             begin
               KillTimer(Handle, TIMER_AUTO_SHOW);
-              DoAutoShow;
+              if Assigned(FAutoHider)
+              then FAutoHider.Show;
               Exit;
             end;
           TIMER_AUTO_HIDE:
             begin
               KillTimer(Handle, TIMER_AUTO_HIDE);
-              DoAutoHide;
+              if Assigned(FAutoHider)
+              then FAutoHider.Hide;
               Exit;
             end;
           TIMER_SYS_WIDGETS:
@@ -3059,8 +3060,8 @@ begin
     { Settings/Rename dialog destroyed }
     LM_DOAUTOHIDE:
       begin
-        FCanAutoHide := not Focused;
-        DoAutoHide;
+        FAutoHider.CanAutoHide := not Focused;
+        FAutoHider.Hide;
         Exit;
       end;
   end;
@@ -3108,16 +3109,16 @@ begin
      and AutoHide
      //and (FConfig.AutoShowMode = smHotkey)
   then begin
-    if (FAutoHiden)
+    if (FAutoHider.Hidden)
     then begin
       FPrevForegroundWnd := SetForegroundWindowInternal(Handle);
-      FCanAutoHide := False;
-      DoAutoShow;
+      FAutoHider.CanAutoHide := False;
+      FAutoHider.Show;
     end
     else begin
       //SetForegroundWindow(FPrevForegroundWnd);
       // Linkbar will be hidden when it loses Focus
-      //DoAutoHide;
+      //FAutoHider.Hide;
     end;
     Exit;
   end;
@@ -3128,8 +3129,8 @@ end;
 procedure TLinkbarWcl.UpdateBitBuckets;
 begin
   Items.BitBucketUpdateIcon;
-  if FAutoHiden
-  then RecreateMainBitmap(FBeforeAutoHideBound.Width, FBeforeAutoHideBound.Height)
+  if FAutoHider.Hidden
+  then RecreateMainBitmap(FAutoHider.BeforeBound.Width, FAutoHider.BeforeBound.Height)
   else begin
     RecreateMainBitmap(Width, Height);
     UpdateWindow;
@@ -3222,7 +3223,7 @@ procedure TLinkbarWcl.imRemoveBarClick(Sender: TObject);
 var td: TTaskDialog;
 begin
   td := TTaskDialog.Create(Self);
-  FLockAutoHide := True;
+  FAutoHider.Locked := True;
   try
     td.Caption := ' ' + APP_NAME_LINKBAR;
     td.MainIcon := tdiNone;
@@ -3245,7 +3246,7 @@ begin
       PostQuitMessage(0);
     end;
   finally
-    FLockAutoHide := False;
+    FAutoHider.Locked := False;
     td.Free;
   end;
 end;
@@ -3312,7 +3313,7 @@ end;
 
 procedure TLinkbarWcl.BarSetAutoHideLock(const ALock: Boolean);
 begin
-  FLockAutoHide := ALock;
+  FAutoHider.Locked := ALock;
 end;
 
 procedure TLinkbarWcl.BarRelayout;
@@ -3322,7 +3323,7 @@ end;
 
 function TLinkbarWcl.BarCanAnimate: Boolean;
 begin
-  Result := IsDock and Assigned(oAppBar) and (not FAutoHiden) and IsWindowVisible(Handle);
+  Result := IsDock and Assigned(oAppBar) and (not FAutoHider.Hidden) and IsWindowVisible(Handle);
 end;
 
 function TLinkbarWcl.BarCollapsedLength(const AVertical: Boolean): Integer;
@@ -3348,8 +3349,8 @@ var
   pt: TPoint;
 begin
   GetCursorPos(pt);
-  Result := FAutoHiden or FFullscreen.HiddenByFullscreen
-         or FLockAutoHide or FLockHotIndex or FMouseLeftDown or FDock.Sliding
+  Result := FAutoHider.Hidden or FFullscreen.HiddenByFullscreen
+         or FAutoHider.Locked or FLockHotIndex or FMouseLeftDown or FDock.Sliding
          or PtInRect(BoundsRect, pt);
 end;
 
@@ -3378,76 +3379,40 @@ begin
   Result := FSysWidgets.Enabled;
 end;
 
-procedure TLinkbarWcl.DoAutoHide;
-var r: TRect;
+function TLinkbarWcl.BarAutoHideEnabled: Boolean;
 begin
-  if (not AutoHide)
-     or FLockAutoHide
-     or ( WindowFromPoint(MakePoint(GetMessagePos)) = Handle )
-  then Exit;
-
-  if FCanAutoHide and not FAutoHiden
-  then begin
-    FAutoHiden := True;
-    HotIndex := ITEM_NONE;
-    r := FBeforeAutoHideBound;
-    case Align of
-      EPanelAlignTop: r.Bottom := r.Top + ScaleDimension(AUTOHIDE_SIZE);
-      EPanelAlignLeft: r.Right := r.Left + ScaleDimension(AUTOHIDE_SIZE);
-      EPanelAlignRight: r.Left := r.Right - ScaleDimension(AUTOHIDE_SIZE);
-      EPanelAlignBottom: r.Top := r.Bottom - ScaleDimension(AUTOHIDE_SIZE);
-    end;
-    FAfterAutoHideBound := r;
-    MoveWindow(Handle, r.Left, r.Top, r.Width, r.Height, False);
-    UpdateWindow(FAfterAutoHideBound);
-    Self.OnContextPopup := nil;
-  end;
+  Result := AutoHide;
 end;
 
-procedure TLinkbarWcl.DoAutoShow;
-var pt: TPoint;
+function TLinkbarWcl.BarAutoShowDelay: Integer;
 begin
-  pt := MakePoint(GetMessagePos);
-  if (AutoHide)
-     and (FAutoHiden)
-     and ((not FCanAutoHide) or (WindowFromPoint(pt) = Handle))
-     //(FConfig.AutoShowMode <> smHotKey)
-  then begin
-    FAutoHiden := False;
-    MoveWindow(Handle, FBeforeAutoHideBound.Left, FBeforeAutoHideBound.Top,
-      FBeforeAutoHideBound.Width, FBeforeAutoHideBound.Height, False);
-    UpdateWindow(FBeforeAutoHideBound);
-    Self.OnContextPopup := FormContextPopup;
-  end;
+  Result := FConfig.AutoShowDelay;
 end;
 
-procedure TLinkbarWcl.DoDelayedAutoHide(const ADelay: Cardinal);
+procedure TLinkbarWcl.BarClearHot;
 begin
-  if (not AutoHide)
-  then Exit;
-
-  if (ADelay = 0)
-  then DoAutoHide
-  else SetTimer(Handle, TIMER_AUTO_HIDE, ADelay, nil);
+  HotIndex := ITEM_NONE;
 end;
 
-procedure TLinkbarWcl.DoDelayedAutoShow;
+procedure TLinkbarWcl.BarPresent(const ABounds: TRect);
 begin
-  if (not AutoHide)
-  then Exit;
+  UpdateWindow(ABounds);
+end;
 
-  if (FConfig.AutoShowDelay = 0)
-  then DoAutoShow
-  else SetTimer(Handle, TIMER_AUTO_SHOW, FConfig.AutoShowDelay, nil);
+procedure TLinkbarWcl.BarEnableContextMenu(const AEnabled: Boolean);
+begin
+  if AEnabled
+  then Self.OnContextPopup := FormContextPopup
+  else Self.OnContextPopup := nil;
 end;
 
 procedure TLinkbarWcl.FormMouseEnter(Sender: TObject);
 begin
   FCollapse.CancelAuto;
   if AutoHide
-     and FAutoHiden
+     and FAutoHider.Hidden
      and (FConfig.AutoShowMode = EAutoShowModeMouseHover)
-  then DoDelayedAutoShow;
+  then FAutoHider.DelayedShow;
 end;
 
 procedure TLinkbarWcl.FormMouseLeave(Sender: TObject);
@@ -3459,8 +3424,8 @@ begin
     FZoom.Cursor := -1;
     RedrawZoom;
   end;
-  if (FConfig.AutoShowMode = EAutoShowModeMouseHover) or FCanAutoHide
-  then DoDelayedAutoHide(TIMER_AUTO_HIDE_DELAY);
+  if (FConfig.AutoShowMode = EAutoShowModeMouseHover) or FAutoHider.CanAutoHide
+  then FAutoHider.DelayedHide(TIMER_AUTO_HIDE_DELAY);
 end;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3513,17 +3478,17 @@ end;
 procedure TLinkbarWcl.DoDragEnter(const pt: TPoint);
 begin
   if AutoHide
-     and FAutoHiden
+     and FAutoHider.Hidden
   then begin
-    FCanAutoHide := False;
-    DoAutoShow;
+    FAutoHider.CanAutoHide := False;
+    FAutoHider.Show;
   end;
 end;
 
 procedure TLinkbarWcl.DoDragOver(const pt: TPoint; var ppidl: PItemIDList);
 begin
   if AutoHide
-     and FAutoHiden
+     and FAutoHider.Hidden
   then Exit;
   SetDropPosition(pt);
   ppidl := FDropTarget.Pidl;
@@ -3534,8 +3499,8 @@ begin
   SetDropPosition( Point(-1, -1) );
   if AutoHide and not Active
   then begin
-    FCanAutoHide := True;
-    SetTimer(Handle, TIMER_AUTO_HIDE, TIMER_AUTO_HIDE_DELAY, nil); // DoAutoHide;
+    FAutoHider.CanAutoHide := True;
+    SetTimer(Handle, TIMER_AUTO_HIDE, TIMER_AUTO_HIDE_DELAY, nil); // FAutoHider.Hide;
   end;
 end;
 
@@ -3543,7 +3508,7 @@ procedure TLinkbarWcl.DoDrop(const pt: TPoint);
 begin
   if AutoHide and not Active
   then begin
-    FCanAutoHide := True;
+    FAutoHider.CanAutoHide := True;
   end;
 
   if FDragingItem
@@ -3808,7 +3773,7 @@ end;
 
 procedure TLinkbarWcl.UpdateRunningState;
 begin
-  if (not Assigned(FRunning)) or FAutoHiden or IsDragDrop or FMouseDragLinkbar or FMouseLeftDown
+  if (not Assigned(FRunning)) or FAutoHider.Hidden or IsDragDrop or FMouseDragLinkbar or FMouseLeftDown
   then Exit;
 
   if FRunning.Refresh(Items)
@@ -3874,7 +3839,7 @@ end;
 
 function TLinkbarWcl.BarThumbsBlocked: Boolean;
 begin
-  Result := FMouseLeftDown or IsDragDrop or FLockHotIndex or FAutoHiden;
+  Result := FMouseLeftDown or IsDragDrop or FLockHotIndex or FAutoHider.Hidden;
 end;
 
 function TLinkbarWcl.BarOwner: TComponent;
@@ -3950,7 +3915,7 @@ procedure TLinkbarWcl.ApplyWindowAccent;
 begin
   if not IsWindows10
   then Exit;
-  if IsDock or (FAutoHiden and FConfig.AutoHideTransparency)
+  if IsDock or (FAutoHider.Hidden and FConfig.AutoHideTransparency)
   then ThemeSetWindowAccentPolicy10(Handle, tmDisabled, 0)
   else ThemeSetWindowAccentPolicy10(Handle, FConfig.TransparencyMode, BackgroundColor);
 
@@ -3996,7 +3961,7 @@ end;
 procedure TLinkbarWcl.BarMoveTo(const AX, AY: Integer);
 begin
   SetWindowPos(Handle, 0, AX, AY, 0, 0, SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE);
-  FBeforeAutoHideBound := Bounds(AX, AY, Width, Height);
+  FAutoHider.BeforeBound := Bounds(AX, AY, Width, Height);
 end;
 
 procedure TLinkbarWcl.SetBarStyle(AValue: Integer);
@@ -4166,7 +4131,7 @@ end;
 
 procedure TLinkbarWcl.RedrawZoom;
 begin
-  if FAutoHiden or IsDragDrop
+  if FAutoHider.Hidden or IsDragDrop
      or (BitmapPanel.Width = 0) or (BitmapPanel.Height = 0)
   then Exit;
   RecreateMainBitmap(BitmapPanel.Width, BitmapPanel.Height);
@@ -4204,7 +4169,7 @@ procedure TLinkbarWcl.RefreshSysWidgets;
 var r: TRect;
 begin
   FSysWidgets.Sample;
-  if FAutoHiden or IsDragDrop or FMouseDragLinkbar
+  if FAutoHider.Hidden or IsDragDrop or FMouseDragLinkbar
      or (BitmapPanel.Width = 0) or (BitmapPanel.Height = 0)
   then Exit;
   r := FSysWidgets.WidgetRect(BitmapPanel.Width, BitmapPanel.Height);

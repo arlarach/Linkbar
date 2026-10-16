@@ -71,3 +71,7 @@ __recovery/
 # Build output and generated resources
 out/
 *.res
+
+# Work files of the assistant (backups and temporary scripts); IA/proyectos stays versioned
+src/IA/backup/
+src/IA/TMP/
