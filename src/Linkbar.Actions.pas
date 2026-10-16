@@ -17,10 +17,19 @@ uses
   LBToolbar;
 
 type
-  TActionMode = (amKeys, amText);
+  TActionMode = (amKeys, amText, amMulti, amCommand);
+
+  { Element of a multi-command action: program, URL or folder }
+  TMultiItem = record
+    Target: string;
+    Params: string;
+    DelayMs: Integer;  // wait before running this element
+  end;
 
   TActionData = record
     Mode: TActionMode;
+    Items: TArray<TMultiItem>; // amMulti: elements run in order
+    Command: string;   // amCommand: internal command ("EmptyRecycleBin")
     Keys: string;      // "Ctrl+Shift+V"; several combos separated by spaces
     Text: string;      // text to type (amText)
     Glyph: Word;       // "Segoe MDL2 Assets" glyph, 0 = none
@@ -56,7 +65,8 @@ implementation
 
 uses
   System.Math, System.IniFiles, System.StrUtils, System.UITypes,
-  GdiPlus, ExplorerMenu, Linkbar.Consts, Linkbar.Theme, Linkbar.L10n;
+  Winapi.ShellAPI, Winapi.ActiveX,
+  GdiPlus, ExplorerMenu, Linkbar.Consts, Linkbar.Theme, Linkbar.L10n, Linkbar.Shell;
 
 { ---------- presets ---------- }
 
@@ -71,6 +81,11 @@ type
 const
   GLYPH_KEYBOARD = $E765;
   GLYPH_TEXT     = $E70F;
+  GLYPH_MULTI    = $E71D;
+  GLYPH_DELETE   = $E74D;
+  CMD_EMPTY_BIN  = 'EmptyRecycleBin';
+  MAX_MULTI_ITEMS = 20;
+  MAX_MULTI_DELAY = 60000;
 
   PRESETS: array[0..21] of TActionPreset = (
     (Key: 'Copy';        Name: 'Copy';               Keys: 'Ctrl+C';          Glyph: $E8C8),
@@ -97,9 +112,19 @@ const
     (Key: 'VolumeDown';  Name: 'Volume down';        Keys: 'VolumeDown';      Glyph: $E993)
   );
 
+  { Internal commands listed after the key presets in the editor }
+  CMD_PRESETS: array[0..0] of TActionPreset = (
+    (Key: CMD_EMPTY_BIN; Name: 'Empty Recycle Bin'; Keys: CMD_EMPTY_BIN; Glyph: GLYPH_DELETE)
+  );
+
 function PresetName(const AIndex: Integer): string;
 begin
   Result := L10NFind('Action.' + PRESETS[AIndex].Key, PRESETS[AIndex].Name);
+end;
+
+function CmdPresetName(const AIndex: Integer): string;
+begin
+  Result := L10NFind('Action.' + CMD_PRESETS[AIndex].Key, CMD_PRESETS[AIndex].Name);
 end;
 
 { ---------- key names ---------- }
@@ -306,10 +331,61 @@ begin
   SendInputs(inputs);
 end;
 
+{ Runs the elements in order on a worker thread so the bar never freezes }
+procedure RunMulti(const AItems: TArray<TMultiItem>);
+var items: TArray<TMultiItem>;
+begin
+  items := Copy(AItems);
+  if (Length(items) = 0) then Exit;
+  TThread.CreateAnonymousThread(
+    procedure
+    var it: TMultiItem;
+    begin
+      for it in items do
+      begin
+        if (it.DelayMs > 0) then Sleep(it.DelayMs);
+        try
+          LBShellExecute(0, 'open', it.Target, it.Params);
+        except
+          // an element that fails must not stop the rest of the sequence
+        end;
+      end;
+    end).Start;
+end;
+
+{ Windows asks for confirmation and shows its own progress; runs on a worker thread
+  so the bar does not freeze while the dialog is open }
+procedure RunEmptyRecycleBin;
+begin
+  TThread.CreateAnonymousThread(
+    procedure
+    var needUninit: Boolean;
+    begin
+      needUninit := SUCCEEDED(CoInitializeEx(nil, COINIT_APARTMENTTHREADED));
+      try
+        SHEmptyRecycleBin(0, nil, 0);
+      finally
+        if needUninit then CoUninitialize;
+      end;
+    end).Start;
+end;
+
 procedure RunAction(const AData: TActionData; ATarget: HWND);
 var t: Cardinal;
     combos: TArray<TKeyCombo>;
 begin
+  if (AData.Mode = amMulti)
+  then begin
+    RunMulti(AData.Items);
+    Exit;
+  end;
+  if (AData.Mode = amCommand)
+  then begin
+    if SameText(AData.Command, CMD_EMPTY_BIN)
+    then RunEmptyRecycleBin;
+    Exit;
+  end;
+
   // Give the focus back to the window that was in front before the click
   if (ATarget <> 0) and IsWindow(ATarget) and (GetForegroundWindow <> ATarget)
   then begin
@@ -334,10 +410,13 @@ end;
 
 const
   SEC = 'Action';
+  SEC_MULTI = 'Multi';
 
 procedure TActionData.Clear;
 begin
   Mode := amKeys;
+  Items := nil;
+  Command := '';
   Keys := '';
   Text := '';
   Glyph := 0;
@@ -381,7 +460,8 @@ end;
 function LoadActionFile(const AFileName: string; out AData: TActionData): Boolean;
 var ini: TMemIniFile;
     s: string;
-    v: Integer;
+    v, i, n: Integer;
+    it: TMultiItem;
 begin
   AData.Clear;
   Result := False;
@@ -389,8 +469,23 @@ begin
   try
     ini := TMemIniFile.Create(AFileName, TEncoding.UTF8);
     try
-      if SameText(ini.ReadString(SEC, 'Mode', 'keys'), 'text')
-      then AData.Mode := amText;
+      s := ini.ReadString(SEC, 'Mode', 'keys');
+      if SameText(s, 'text')
+      then AData.Mode := amText
+      else if SameText(s, 'multi')
+      then AData.Mode := amMulti
+      else if SameText(s, 'command')
+      then AData.Mode := amCommand;
+      AData.Command := Trim(ini.ReadString(SEC, 'Command', ''));
+      n := Min(ini.ReadInteger(SEC_MULTI, 'Count', 0), MAX_MULTI_ITEMS);
+      for i := 1 to n do
+      begin
+        it.Target := Trim(ini.ReadString(SEC_MULTI, 'Target' + IntToStr(i), ''));
+        it.Params := ini.ReadString(SEC_MULTI, 'Params' + IntToStr(i), '');
+        it.DelayMs := EnsureRange(ini.ReadInteger(SEC_MULTI, 'Delay' + IntToStr(i), 0), 0, MAX_MULTI_DELAY);
+        if (it.Target <> '')
+        then AData.Items := AData.Items + [it];
+      end;
       AData.Keys := Trim(ini.ReadString(SEC, 'Keys', ''));
       AData.Text := UnescapeText(ini.ReadString(SEC, 'Text', ''));
       s := Trim(ini.ReadString(SEC, 'Glyph', ''));
@@ -412,13 +507,19 @@ end;
 function SaveActionFile(const AFileName: string; const AData: TActionData): Boolean;
 var sl: TStringList;
     c: Cardinal;
+    i: Integer;
 begin
   sl := TStringList.Create;
   try
     sl.Add('[' + SEC + ']');
-    if (AData.Mode = amText)
-    then sl.Add('Mode=text')
-    else sl.Add('Mode=keys');
+    case AData.Mode of
+      amText:  sl.Add('Mode=text');
+      amMulti: sl.Add('Mode=multi');
+      amCommand: sl.Add('Mode=command');
+      else     sl.Add('Mode=keys');
+    end;
+    if (AData.Mode = amCommand)
+    then sl.Add('Command=' + AData.Command);
     sl.Add('Keys=' + AData.Keys);
     sl.Add('Text=' + EscapeText(AData.Text));
     if (AData.Glyph <> 0)
@@ -430,6 +531,18 @@ begin
     else begin
       c := ColorToRGB(AData.Color);
       sl.Add(Format('Color=#%.2X%.2X%.2X', [GetRValue(c), GetGValue(c), GetBValue(c)]));
+    end;
+    if (Length(AData.Items) > 0)
+    then begin
+      sl.Add('');
+      sl.Add('[' + SEC_MULTI + ']');
+      sl.Add('Count=' + IntToStr(Length(AData.Items)));
+      for i := 0 to High(AData.Items) do
+      begin
+        sl.Add('Target' + IntToStr(i + 1) + '=' + AData.Items[i].Target);
+        sl.Add('Params' + IntToStr(i + 1) + '=' + AData.Items[i].Params);
+        sl.Add('Delay' + IntToStr(i + 1) + '=' + IntToStr(AData.Items[i].DelayMs));
+      end;
     end;
     try
       sl.SaveToFile(AFileName, TEncoding.UTF8);
@@ -509,6 +622,8 @@ begin
     else begin
       if (AData.Glyph <> 0) then s := Char(AData.Glyph)
       else if (AData.Mode = amText) then s := Char(GLYPH_TEXT)
+      else if (AData.Mode = amMulti) then s := Char(GLYPH_MULTI)
+      else if (AData.Mode = amCommand) then s := Char(GLYPH_DELETE)
       else s := Char(GLYPH_KEYBOARD);
       family := 'Segoe MDL2 Assets';
       style := FontStyleRegular;
@@ -583,9 +698,12 @@ end;
 
 function TItemAction.Description: string;
 begin
-  if (Data.Mode = amText)
-  then Result := Caption + '  (' + L10NFind('Action.TypesText', 'types a text') + ')'
-  else Result := Caption + '  (' + Data.Keys + ')';
+  case Data.Mode of
+    amText:  Result := Caption + '  (' + L10NFind('Action.TypesText', 'types a text') + ')';
+    amMulti: Result := Caption + '  (' + Format(L10NFind('Action.MultiCount', '%d commands'), [Length(Data.Items)]) + ')';
+    amCommand: Result := Caption + '  (' + L10NFind('Action.CmdEmptyRecycleBin', 'empties the Recycle Bin') + ')';
+    else     Result := Caption + '  (' + Data.Keys + ')';
+  end;
 end;
 
 { ---------- editor dialog ---------- }
@@ -595,10 +713,13 @@ type
   private
     edtName: TEdit;
     cbbPreset: TComboBox;
-    rbKeys, rbText: TRadioButton;
+    rbKeys, rbText, rbMulti: TRadioButton;
     edtKeys: TEdit;
     chbWin: TCheckBox;
     mmoText: TMemo;
+    lbItems: TListBox;
+    btnItemAdd, btnItemRemove, btnItemUp, btnItemDown, btnBrowse: TButton;
+    edtTarget, edtParams, edtDelay: TEdit;
     edtIconText: TEdit;
     btnColor, btnColorDefault: TButton;
     pbPreview: TPaintBox;
@@ -614,6 +735,13 @@ type
     procedure AnyChange(Sender: TObject);
     procedure ColorClick(Sender: TObject);
     procedure ColorDefaultClick(Sender: TObject);
+    procedure ItemAddClick(Sender: TObject);
+    procedure ItemRemoveClick(Sender: TObject);
+    procedure ItemMoveClick(Sender: TObject);
+    procedure ItemSelect(Sender: TObject);
+    procedure ItemFieldChange(Sender: TObject);
+    procedure BrowseClick(Sender: TObject);
+    procedure RefreshItems(const ASelect: Integer);
     procedure PreviewPaint(Sender: TObject);
     procedure OkClick(Sender: TObject);
     procedure UpdateEnabled;
@@ -678,10 +806,16 @@ begin
   cbbPreset.Items.Add(L10NFind('Action.Custom', '(custom)'));
   for i := Low(PRESETS) to High(PRESETS) do
     cbbPreset.Items.Add(PresetName(i) + '   ' + PRESETS[i].Keys);
+  for i := Low(CMD_PRESETS) to High(CMD_PRESETS) do
+    cbbPreset.Items.Add(CmdPresetName(i));
   cbbPreset.ItemIndex := 0;
   for i := Low(PRESETS) to High(PRESETS) do
     if (AData.Mode = amKeys) and SameText(AData.Keys, PRESETS[i].Keys)
     then cbbPreset.ItemIndex := i + 1;
+  if (AData.Mode = amCommand)
+  then for i := Low(CMD_PRESETS) to High(CMD_PRESETS) do
+    if SameText(AData.Command, CMD_PRESETS[i].Keys)
+    then cbbPreset.ItemIndex := Length(PRESETS) + i + 1;
   cbbPreset.OnChange := PresetChange;
   Inc(y, S(36));
 
@@ -725,6 +859,72 @@ begin
   mmoText.Text := AData.Text;
   mmoText.OnChange := AnyChange;
   Inc(y, S(72));
+
+  // Mode: several commands
+  rbMulti := TRadioButton.Create(Self);
+  rbMulti.Parent := Self;
+  rbMulti.SetBounds(S(12), y, S(LW + CW), S(19));
+  rbMulti.Caption := L10NFind('Action.ModeMulti', 'Run several commands');
+  rbMulti.OnClick := ModeClick;
+  Inc(y, S(24));
+
+  lbItems := TListBox.Create(Self);
+  lbItems.Parent := Self;
+  lbItems.SetBounds(x2, y, S(CW), S(80));
+  lbItems.OnClick := ItemSelect;
+  Inc(y, S(84));
+
+  btnItemAdd := TButton.Create(Self);
+  btnItemAdd.Parent := Self;
+  btnItemAdd.SetBounds(x2, y, S(60), S(25));
+  btnItemAdd.Caption := L10NFind('Action.MultiAdd', 'Add');
+  btnItemAdd.OnClick := ItemAddClick;
+  btnItemRemove := TButton.Create(Self);
+  btnItemRemove.Parent := Self;
+  btnItemRemove.SetBounds(x2 + S(63), y, S(60), S(25));
+  btnItemRemove.Caption := L10NFind('Action.MultiRemove', 'Remove');
+  btnItemRemove.OnClick := ItemRemoveClick;
+  btnItemUp := TButton.Create(Self);
+  btnItemUp.Parent := Self;
+  btnItemUp.SetBounds(x2 + S(126), y, S(60), S(25));
+  btnItemUp.Caption := L10NFind('Action.MultiUp', 'Up');
+  btnItemUp.Tag := -1;
+  btnItemUp.OnClick := ItemMoveClick;
+  btnItemDown := TButton.Create(Self);
+  btnItemDown.Parent := Self;
+  btnItemDown.SetBounds(x2 + S(189), y, S(61), S(25));
+  btnItemDown.Caption := L10NFind('Action.MultiDown', 'Down');
+  btnItemDown.Tag := 1;
+  btnItemDown.OnClick := ItemMoveClick;
+  Inc(y, S(32));
+
+  AddLabel(L10NFind('Action.MultiTarget', 'Program or URL:'), y);
+  edtTarget := TEdit.Create(Self);
+  edtTarget.Parent := Self;
+  edtTarget.SetBounds(x2, y, S(CW - 28), S(23));
+  edtTarget.OnChange := ItemFieldChange;
+  btnBrowse := TButton.Create(Self);
+  btnBrowse.Parent := Self;
+  btnBrowse.SetBounds(x2 + S(CW - 24), y, S(24), S(23));
+  btnBrowse.Caption := '...';
+  btnBrowse.OnClick := BrowseClick;
+  Inc(y, S(28));
+
+  AddLabel(L10NFind('Action.MultiParams', 'Arguments:'), y);
+  edtParams := TEdit.Create(Self);
+  edtParams.Parent := Self;
+  edtParams.SetBounds(x2, y, S(CW), S(23));
+  edtParams.OnChange := ItemFieldChange;
+  Inc(y, S(28));
+
+  AddLabel(L10NFind('Action.MultiDelay', 'Wait before (ms):'), y);
+  edtDelay := TEdit.Create(Self);
+  edtDelay.Parent := Self;
+  edtDelay.SetBounds(x2, y, S(70), S(23));
+  edtDelay.NumbersOnly := True;
+  edtDelay.MaxLength := 5;
+  edtDelay.OnChange := ItemFieldChange;
+  Inc(y, S(36));
 
   // Icon
   AddLabel(L10NFind('Action.IconText', 'Icon text (optional):'), y);
@@ -780,8 +980,11 @@ begin
   edtKeys.Text := keys;
   rbKeys.Checked := (AData.Mode = amKeys);
   rbText.Checked := (AData.Mode = amText);
+  rbMulti.Checked := (AData.Mode = amMulti);
+  // amCommand: no radio button checked, the command comes from the preset
 
   FUpdating := False;
+  RefreshItems(0);
   UpdateEnabled;
   ActiveControl := edtName;
 end;
@@ -791,13 +994,138 @@ begin
   edtKeys.Enabled := rbKeys.Checked;
   chbWin.Enabled := rbKeys.Checked;
   mmoText.Enabled := rbText.Checked;
+  lbItems.Enabled := rbMulti.Checked;
+  btnItemAdd.Enabled := rbMulti.Checked and (Length(FData.Items) < MAX_MULTI_ITEMS);
+  btnItemRemove.Enabled := rbMulti.Checked and (lbItems.ItemIndex >= 0);
+  btnItemUp.Enabled := rbMulti.Checked and (lbItems.ItemIndex > 0);
+  btnItemDown.Enabled := rbMulti.Checked and (lbItems.ItemIndex >= 0) and (lbItems.ItemIndex < High(FData.Items));
+  edtTarget.Enabled := rbMulti.Checked and (lbItems.ItemIndex >= 0);
+  btnBrowse.Enabled := edtTarget.Enabled;
+  edtParams.Enabled := edtTarget.Enabled;
+  edtDelay.Enabled := edtTarget.Enabled;
+end;
+
+function ItemCaption(const AItem: TMultiItem): string;
+begin
+  if (AItem.Target = '')
+  then Result := '...'
+  else Result := Trim(AItem.Target + ' ' + AItem.Params);
+  if (AItem.DelayMs > 0)
+  then Result := Result + '   [+' + IntToStr(AItem.DelayMs) + ' ms]';
+end;
+
+{ Rebuilds the list and selects ASelect (-1 = none); also loads the fields }
+procedure TFormActionEdit.RefreshItems(const ASelect: Integer);
+var i: Integer;
+begin
+  FUpdating := True;
+  try
+    lbItems.Items.BeginUpdate;
+    try
+      lbItems.Items.Clear;
+      for i := 0 to High(FData.Items) do
+        lbItems.Items.Add(ItemCaption(FData.Items[i]));
+    finally
+      lbItems.Items.EndUpdate;
+    end;
+    if (ASelect >= 0) and (ASelect < lbItems.Count)
+    then lbItems.ItemIndex := ASelect
+    else lbItems.ItemIndex := -1;
+    if (lbItems.ItemIndex >= 0)
+    then begin
+      edtTarget.Text := FData.Items[lbItems.ItemIndex].Target;
+      edtParams.Text := FData.Items[lbItems.ItemIndex].Params;
+      edtDelay.Text := IntToStr(FData.Items[lbItems.ItemIndex].DelayMs);
+    end
+    else begin
+      edtTarget.Text := '';
+      edtParams.Text := '';
+      edtDelay.Text := '';
+    end;
+  finally
+    FUpdating := False;
+  end;
+  UpdateEnabled;
+end;
+
+procedure TFormActionEdit.ItemSelect(Sender: TObject);
+begin
+  RefreshItems(lbItems.ItemIndex);
+end;
+
+procedure TFormActionEdit.ItemAddClick(Sender: TObject);
+var it: TMultiItem;
+begin
+  it.Target := '';
+  it.Params := '';
+  it.DelayMs := 0;
+  FData.Items := FData.Items + [it];
+  RefreshItems(High(FData.Items));
+  edtTarget.SetFocus;
+end;
+
+procedure TFormActionEdit.ItemRemoveClick(Sender: TObject);
+var i: Integer;
+begin
+  i := lbItems.ItemIndex;
+  if (i < 0) then Exit;
+  Delete(FData.Items, i, 1);
+  RefreshItems(Min(i, High(FData.Items)));
+  pbPreview.Invalidate;
+end;
+
+procedure TFormActionEdit.ItemMoveClick(Sender: TObject);
+var i, j: Integer;
+    tmp: TMultiItem;
+begin
+  i := lbItems.ItemIndex;
+  j := i + TComponent(Sender).Tag;
+  if (i < 0) or (j < 0) or (j > High(FData.Items)) then Exit;
+  tmp := FData.Items[i];
+  FData.Items[i] := FData.Items[j];
+  FData.Items[j] := tmp;
+  RefreshItems(j);
+end;
+
+procedure TFormActionEdit.ItemFieldChange(Sender: TObject);
+var i, v: Integer;
+begin
+  if FUpdating then Exit;
+  i := lbItems.ItemIndex;
+  if (i < 0) then Exit;
+  FData.Items[i].Target := Trim(edtTarget.Text);
+  FData.Items[i].Params := edtParams.Text;
+  if TryStrToInt(edtDelay.Text, v)
+  then FData.Items[i].DelayMs := EnsureRange(v, 0, MAX_MULTI_DELAY)
+  else FData.Items[i].DelayMs := 0;
+  lbItems.Items[i] := ItemCaption(FData.Items[i]);
+  lbItems.ItemIndex := i;
+end;
+
+procedure TFormActionEdit.BrowseClick(Sender: TObject);
+var dlg: TOpenDialog;
+begin
+  dlg := TOpenDialog.Create(Self);
+  try
+    dlg.Filter := L10NFind('Action.MultiFilter', 'All files') + '|*.*';
+    if dlg.Execute(Handle)
+    then edtTarget.Text := dlg.FileName;
+  finally
+    dlg.Free;
+  end;
 end;
 
 procedure TFormActionEdit.ReadControls;
 begin
   if rbText.Checked
   then FData.Mode := amText
-  else FData.Mode := amKeys;
+  else if rbMulti.Checked
+  then FData.Mode := amMulti
+  else if rbKeys.Checked
+  then FData.Mode := amKeys
+  else FData.Mode := amCommand; // no radio checked: internal command from the preset
+  if (FData.Mode <> amCommand)
+  then FData.Command := '';
   FData.Keys := Trim(edtKeys.Text);
   if chbWin.Checked and (FData.Keys <> '')
   then FData.Keys := 'Win+' + FData.Keys;
@@ -811,6 +1139,31 @@ var i: Integer;
 begin
   i := cbbPreset.ItemIndex - 1;
   if (i < 0) then Exit;
+  if (i >= Length(PRESETS))
+  then begin
+    // internal command: no radio button applies
+    i := i - Length(PRESETS);
+    FUpdating := True;
+    try
+      rbKeys.Checked := False;
+      rbText.Checked := False;
+      rbMulti.Checked := False;
+      FData.Mode := amCommand;
+      FData.Command := CMD_PRESETS[i].Keys;
+      FData.Glyph := CMD_PRESETS[i].Glyph;
+      edtIconText.Text := '';
+      if (Trim(edtName.Text) = '') or (edtName.Tag = 1)
+      then begin
+        edtName.Text := CmdPresetName(i);
+        edtName.Tag := 1;
+      end;
+    finally
+      FUpdating := False;
+    end;
+    UpdateEnabled;
+    pbPreview.Invalidate;
+    Exit;
+  end;
   FUpdating := True;
   try
     keys := PRESETS[i].Keys;
@@ -834,6 +1187,13 @@ end;
 
 procedure TFormActionEdit.ModeClick(Sender: TObject);
 begin
+  // leaving an internal command: forget its command and glyph
+  if not FUpdating and (FData.Command <> '')
+  then begin
+    FData.Command := '';
+    FData.Glyph := 0;
+    cbbPreset.ItemIndex := 0;
+  end;
   UpdateEnabled;
   AnyChange(Sender);
 end;
@@ -889,7 +1249,7 @@ begin
     then FData.Glyph := PRESETS[match - 1].Glyph
     else FData.Glyph := 0;
   end;
-  if (Sender = rbText) and rbText.Checked
+  if ((Sender = rbText) and rbText.Checked) or ((Sender = rbMulti) and rbMulti.Checked)
   then FData.Glyph := 0;
   pbPreview.Invalidate;
 end;
@@ -972,6 +1332,19 @@ begin
   then begin
     mmoText.SetFocus;
     Exit;
+  end;
+  if (FData.Mode = amMulti)
+  then begin
+    // drop the elements left empty
+    for var i := High(FData.Items) downto 0 do
+      if (FData.Items[i].Target = '')
+      then Delete(FData.Items, i, 1);
+    if (Length(FData.Items) = 0)
+    then begin
+      RefreshItems(-1);
+      btnItemAdd.SetFocus;
+      Exit;
+    end;
   end;
   ModalResult := mrOk;
 end;

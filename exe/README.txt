@@ -69,6 +69,9 @@ add: Shield for shortcut with flag "Run as Administrator" (Properties - Shortcut
 
 == Version 1.8.0 (Oct, 2026) - fork arlarach/Linkbar:
 
+add: "Taskbar icon" style: the bar becomes a button on the Windows taskbar; a click opens its icons above it
+add: Taskbar icon per bar: automatic (2x2 preview of its icons, in the bar color) or any icon; each bar has its own button
+add: Icon picker: modern icons (Windows symbols on a colored tile), PNG/ICO files or classic Windows icons
 add: Action buttons: send a keyboard shortcut (Ctrl+C, Win+Shift+S, media keys...) or type a text
 add: Profiles (for example Work / Personal): switch from the menu or with Ctrl + mouse wheel
 add: Hide the bar when an app is full screen (games, videos)

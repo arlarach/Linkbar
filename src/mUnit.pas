@@ -101,11 +101,15 @@ type
     FThumbIndex: Integer;
     FForegroundAtMouseDown: HWND;
     FLastForeignWnd: HWND;       // last window in front that is not ours (action buttons)
+    FTaskbarButton: TForm;       // "taskbar icon" mode (Linkbar.TaskbarButton)
+    FLauncherOpen: Boolean;      // its popup is open
+    FLauncherClosedAt: Cardinal; // when the popup closed (a click on the button closes it)
+    FTaskbarIcon: string;        // icon of the taskbar button: '' = automatic, "file,index"
     FHideOnFullscreen: Boolean;
     FHiddenByFullscreen: Boolean;
     FLinksBaseDir: string;       // links folder of the main profile
     FProfile: string;            // current profile ('' = main)
-    imNewAction, imEditAction, imDeleteAction, imActionLine, imProfiles: TMenuItem;
+    imNewAction, imEditAction, imDeleteAction, imActionLine, imProfiles, imPinned, imPinAllActions, imUnpinAll, imAnimateCollapse, imAutoCollapse: TMenuItem;
     FCpuLoad, FRamLoad: Integer;       // 0..100
     FPrevIdle, FPrevKernel, FPrevUser: UInt64;
     FExtDragIconSize: Integer;
@@ -139,6 +143,38 @@ type
     FPrevForegroundWnd: HWND;
     FSeparatorWidth: Integer;
     FSeparatorStyle: TSeparatorStyle;
+    FMacCollapsed: Boolean;       // True = Solo CPU/RAM visibles
+    FCollapseOnFullscreen: Boolean; // collapse the bar (instead of hiding it) when an app is full screen
+    FCollapsedByFullscreen: Boolean; // collapsed automatically (not saved)
+    FBtnCollapseRect: TRect;      // Área interactiva del botón ">>" / "<<"
+    FBtnCollapseHot: Boolean;     // Para saber si el mouse está sobre el botón
+    FBtnClickHandled: Boolean;    // the mouse down was the ">>" click: its mouse up must do nothing
+    FCollapsedByIdle: Boolean;    // collapsed after some time without using the bar (not saved)
+    FAutoCollapseSecs: Integer;   // 0 = off
+    FCollapseMenu: Boolean;       // the popup menu is the one of the ">>" button
+    function IsCollapsed: Boolean; inline;
+    procedure SetCollapseOnFullscreen(AValue: Boolean);
+  private
+    // Collapse / expand animation (dock mode only)
+    FAnimateCollapse: Boolean;
+    FAnimating: Boolean;          // frames are being shown: normal redraws are skipped
+    FAnimBuild: Boolean;          // only render the expanded bitmap, do not touch the window
+    FAnimRender: Boolean;         // lay out as expanded even if collapsed
+    FAnimStart: Cardinal;
+    FAnimFrom, FAnimTo: Integer;  // window length at the start / end of the animation
+    FAnimRectExp: TRect;          // window rect when expanded (the far edge stays fixed)
+    function CanAnimateCollapse: Boolean;
+    procedure StartCollapseAnim(const AToCollapsed: Boolean);
+    procedure CollapseAnimStep;
+    procedure FinishCollapseAnim;
+    procedure TooltipAnchor(const ARect: TRect; out APt: TPoint; out AHA: TAlignment; out AVA: TVerticalAlignment);
+    procedure DrawPinnedMark(const ABitmap: THBitmap; const AItem: TItemBase; const ARect: TRect);
+    procedure ArmAutoCollapse;
+    procedure AutoCollapseTick;
+    procedure SetAutoCollapseSecs(AValue: Integer);
+    procedure imAnimateCollapseClick(Sender: TObject);
+    procedure imAutoCollapseClick(Sender: TObject);
+  private
     procedure UpdateWindowSize;
     procedure SetLayout(AValue: TPanelLayout);
     procedure SetAlign(AValue: TPanelAlign);
@@ -164,9 +200,22 @@ type
     procedure SetBarStyle(AValue: Integer);
     procedure SetZoomPercent(AValue: Integer);
     function IsDock: Boolean;
+    function IsTaskbarIcon: Boolean;
+    procedure ApplyTaskbarMode;
+    procedure TaskbarButtonClick(Sender: TObject);
+    procedure TaskbarButtonClose(Sender: TObject);
+    procedure LauncherPopupDestroy(Sender: TObject);
+    procedure LauncherRootMenu(AMenu: TPopupMenu);
+    procedure WMInitMenuPopup(var Message: TWMInitMenuPopup); message WM_INITMENUPOPUP;
+    procedure WMMeasureItem(var Message: TWMMeasureItem); message WM_MEASUREITEM;
+    procedure WMDrawItem(var Message: TWMDrawItem); message WM_DRAWITEM;
+    procedure LauncherShowAsBar(Sender: TObject);
+    procedure LauncherSysStats(out ACpu, ARam: Integer);
+    procedure LauncherChanged(Sender: TObject);
+    procedure UpdateTaskbarIcon;
+    procedure SetTaskbarIcon(const AValue: string);
     function ZoomEnabled: Boolean;
     function ZoomRoom: Integer;
-    function ZoomBefore: Boolean;
     function ZoomIconSizeValue: Integer;
     function DockPad: Integer;
     function ItemsMargin: Integer;
@@ -213,6 +262,15 @@ type
     procedure LoadSettings;
     procedure SaveLinks;
   private
+    FPendingFiles: TStringList;   // files whose write failed (locked by Drive...), retried later
+    FPendingTexts: TStringList;   // content for each pending file (same index)
+    FSaveRetries: Integer;
+    function WriteLinesFile(const AFileName, AText: string; const ATries: Integer): Boolean;
+    procedure ForgetPendingSave(const AFileName: string);
+    procedure QueueSave(const AFileName, AText: string);
+    procedure RetryPendingSaves;
+    procedure ShowSaveFailed;
+  private
     BitBucketNotify: Cardinal;
     procedure UpdateBitBuckets;
   private
@@ -234,6 +292,12 @@ type
     procedure RunActionItem(const AIndex: Integer);
     procedure imNewActionClick(Sender: TObject);
     procedure imEditActionClick(Sender: TObject);
+    procedure imPinnedClick(Sender: TObject);
+    procedure imPinAllActionsClick(Sender: TObject);
+    procedure imUnpinAllClick(Sender: TObject);
+    procedure ApplyPinned;
+    procedure LoadPinned;
+    function PinnedLength(const AVertical: Boolean): Integer;
     procedure imDeleteActionClick(Sender: TObject);
     function ProfilesDir: string;
     function ProfileDir(const AName: string): string;
@@ -310,6 +374,10 @@ type
     property ModernStyle: Boolean read FModernStyle write SetModernStyle;
     property ShowSysWidgets: Boolean read FShowSysWidgets write SetShowSysWidgets;
     property HideOnFullscreen: Boolean read FHideOnFullscreen write SetHideOnFullscreen;
+    property CollapseOnFullscreen: Boolean read FCollapseOnFullscreen write SetCollapseOnFullscreen;
+    property AnimateCollapse: Boolean read FAnimateCollapse write FAnimateCollapse;
+    property AutoCollapseSecs: Integer read FAutoCollapseSecs write SetAutoCollapseSecs;
+    property TaskbarIcon: string read FTaskbarIcon write SetTaskbarIcon;
     property BarStyle: Integer read FBarStyle write SetBarStyle;
     procedure ApplyWindowAccent;
     property ZoomPercent: Integer read FZoomPercent write SetZoomPercent;
@@ -357,19 +425,27 @@ uses
   ExplorerMenu, Linkbar.Shell, Linkbar.Theme,
   Linkbar.OS, Linkbar.L10n, JumpLists.Form, JumpLists.Api_2, RenameDialog,
   Linkbar.SettingsForm, Linkbar.Settings, Linkbar.GroupForm, Linkbar.ThumbForm,
-  Linkbar.Actions;
+  Linkbar.Actions, Linkbar.TaskbarButton, Linkbar.IconPicker;
 
 const
   bf: TBlendFunction = (BlendOp: AC_SRC_OVER; BlendFlags: 0;
       SourceConstantAlpha: $FF; AlphaFormat: AC_SRC_ALPHA);
 
   LM_SHELLNOTIFY = WM_USER + 88;
+  LM_TASKBARMODE = WM_USER + 89;
   TIMER_AUTO_SHOW = 15;
   TIMER_AUTO_HIDE = 16;
   TIMER_SYS_WIDGETS = 17;
   TIMER_RUNNING = 18;
   TIMER_THUMBS = 19;
   TIMER_FOREGROUND = 20;
+  TIMER_SAVE_RETRY = 21;
+  TIMER_SAVE_NOTICE = 22;
+  SAVE_RETRY_MS = 5000;
+  SAVE_RETRY_MAX = 6;
+  TIMER_COLLAPSE_ANIM = 23;
+  TIMER_AUTOCOLLAPSE = 24;
+  COLLAPSE_ANIM_MS = 180;
 
 function EnumWindowProcStopDirWatch(wnd: HWND; lParam: LPARAM): BOOL; stdcall;
 var
@@ -486,8 +562,11 @@ begin
   end;
   list.Free;
 
+  LoadPinned;
+
   if FSortAlphabetically
   then Items.Sort;
+  Items.PinnedToEnd;
 
   Items.IconSize := IconSize;
   Items.ZoomIconSize := ZoomIconSizeValue;
@@ -588,6 +667,7 @@ begin
       for var item in Items
       do begin
         if (not Items.IsSeparator(item))
+           and (not item.Rect.IsEmpty)
         then begin
           textRect := FTextRect;
           textRect.Offset(item.Rect.TopLeft);
@@ -650,6 +730,7 @@ begin
       for var item in Items
       do begin
         if (not Items.IsSeparator(item))
+           and (not item.Rect.IsEmpty)
         then begin
           textRect := FTextRect;
           textRect.Offset(item.Rect.TopLeft);
@@ -710,7 +791,10 @@ begin
 
   // "Program is open" indicator
   if not ADrawForDrag
-  then DrawRunningMark(ABitmap, item, r);
+  then begin
+    DrawRunningMark(ABitmap, item, r);
+    DrawPinnedMark(ABitmap, item, r);
+  end;
 end;
 
 procedure TLinkbarWcl.DrawItems(const AWidth, AHeight: integer);
@@ -719,23 +803,31 @@ begin
   Items.Sizes.Separator := SeparatorWidth;
   Items.Sizes.Margin := ItemsMargin;
   Items.Sizes.ZoomRoom := ZoomRoom;
-  Items.Sizes.ZoomBefore := ZoomBefore;
+  Items.Sizes.ZoomOffset := ZoomRoom div 2;
   Items.Sizes.Reserved := SysWidgetLength(IsVertical(Align));
+  Items.Sizes.OnlyPinned := IsCollapsed;
   Items.UpdateLines(IsVertical(Align), AWidth, AHeight);
 
   // Draw captions
   DrawCaption(BitmapPanel, ITEM_ALL);
 
   // Magnification effect (Mac-like)
-  if ZoomEnabled and (FZoomCursor >= 0) and (Items.Lines.Count = 1)
+  if ZoomEnabled and (FZoomCursor >= 0) and (Items.Lines.Count = 1) and not IsCollapsed
   then begin
     DrawItemsZoomed;
     Exit;
   end;
 
+  // Separator before the pinned items
+  if (not Items.PinnedSepRect.IsEmpty)
+     and (FSeparatorStyle <> ESeparatorStyleSpace)
+  then ThemeDrawSeparator(BitmapPanel, Align, Items.PinnedSepRect);
+
   // Draw icons
   for var item in Items do
   begin
+    if item.Rect.IsEmpty  // collapsed bar: item without position
+    then Continue;
     if Items.IsSeparator(item)
        and (FSeparatorStyle <> ESeparatorStyleSpace)
     then begin
@@ -744,12 +836,15 @@ begin
     else begin
       Items.Draw(BitmapPanel.Dc, item, item.Rect.Left + FIconOffset.X, item.Rect.Top + FIconOffset.Y);
       DrawRunningMark(BitmapPanel, item, item.Rect);
+      DrawPinnedMark(BitmapPanel, item, item.Rect);
     end;
   end;
 end;
 
 procedure TLinkbarWcl.RecreateMainBitmap(const AWidth, AHeight: integer);
 begin
+  if FAnimating  // the animation uses the bitmap rendered at its start
+  then Exit;
   BitmapPanel.SetSize(AWidth, AHeight);
   BitmapPanel.Clear;
   // Draw background
@@ -787,6 +882,9 @@ var w, h, c1gw, c2gw, wh: Integer;
     dc: HDC;
     p: Pointer;
 begin
+  if FAnimating  // the animation draws its own frames
+  then Exit;
+
   w := ABounds.Width;
   h := ABounds.Height;
 
@@ -923,6 +1021,10 @@ begin
     else FProfile := '';
   end;
   FHideOnFullscreen     := settings.Read(INI_HIDE_FULLSCREEN, DEF_HIDE_FULLSCREEN);
+  FCollapseOnFullscreen := settings.Read(INI_COLLAPSE_FULLSCREEN, DEF_COLLAPSE_FULLSCREEN);
+  FAnimateCollapse      := settings.Read(INI_ANIMATE_COLLAPSE, DEF_ANIMATE_COLLAPSE);
+  FAutoCollapseSecs     := settings.Read(INI_AUTOCOLLAPSE, DEF_AUTOCOLLAPSE, 0, 3600);
+  FTaskbarIcon          := Trim(settings.Read(INI_TASKBAR_ICON, ''));
   FAutoHide             := settings.Read(INI_AUTOHIDE, DEF_AUTOHIDE);
   FAutoHideTransparency := settings.Read(INI_AUTOHIDE_TRANSPARENCY, DEF_AUTOHIDE_TRANSPARENCY);
   FAutoShowDelay        := settings.Read(INI_AUTOSHOW_DELAY, DEF_AUTOSHOW_DELAY, 0, 60000);
@@ -935,7 +1037,9 @@ begin
   FTooltipShow          := settings.Read(INI_TOOLTIP_SHOW, DEF_TOOLTIP_SHOW);
   FModernStyle          := settings.Read(INI_MODERN_STYLE, DEF_MODERN_STYLE);
   FShowSysWidgets       := settings.Read(INI_SYS_WIDGETS, DEF_SYS_WIDGETS);
-  FBarStyle            := settings.Read(INI_BAR_STYLE, DEF_BAR_STYLE, BAR_STYLE_NORMAL, BAR_STYLE_DOCK);
+  // Without the CPU/RAM widgets there is no ">>" button to expand again
+  FMacCollapsed         := settings.Read(INI_COLLAPSED, DEF_COLLAPSED) and FShowSysWidgets;
+  FBarStyle          := settings.Read(INI_BAR_STYLE, DEF_BAR_STYLE, BAR_STYLE_NORMAL, BAR_STYLE_TASKBAR);
   FZoomPercent          := settings.Read(INI_ZOOM, DEF_ZOOM, ZOOM_MIN, ZOOM_MAX);
   FZoomCursor           := -1;
   FDockPos             := settings.Read(INI_DOCK_POS, DEF_DOCK_POS, 0, 1000);
@@ -996,9 +1100,125 @@ begin
 
   // Window in front: action buttons target + hide on full screen
   SetTimer(Handle, TIMER_FOREGROUND, 500, nil);
+  ArmAutoCollapse;
 
   // Register Hotkey
   HotkeyInfo := hki;
+end;
+
+{ The folder may be synced (Drive, OneDrive) and the file locked for a moment }
+function TLinkbarWcl.WriteLinesFile(const AFileName, AText: string; const ATries: Integer): Boolean;
+begin
+  var sl := TStringList.Create;
+  try
+    sl.Text := AText;
+    for var attempt := 1 to ATries
+    do begin
+      try
+        sl.SaveToFile(AFileName, TEncoding.UTF8);
+        Exit(True);
+      except
+        if (attempt < ATries)
+        then Sleep(150);
+      end;
+    end;
+    Result := False;
+  finally
+    sl.Free;
+  end;
+end;
+
+procedure TLinkbarWcl.ForgetPendingSave(const AFileName: string);
+begin
+  if not Assigned(FPendingFiles)
+  then Exit;
+  var i := FPendingFiles.IndexOf(AFileName);
+  if (i >= 0)
+  then begin
+    FPendingFiles.Delete(i);
+    FPendingTexts.Delete(i);
+  end;
+end;
+
+{ Write only when the content changed. If the file stays locked, keep it
+  pending and retry later (TIMER_SAVE_RETRY) instead of showing an error }
+procedure TLinkbarWcl.QueueSave(const AFileName, AText: string);
+begin
+  if FileExists(AFileName)
+  then begin
+    var current := TStringList.Create;
+    try
+      try
+        current.LoadFromFile(AFileName, TEncoding.UTF8);
+        if (current.Text = AText)
+        then begin
+          ForgetPendingSave(AFileName);
+          Exit;
+        end;
+      except
+        // locked: try to write anyway
+      end;
+    finally
+      current.Free;
+    end;
+  end;
+
+  if WriteLinesFile(AFileName, AText, 5)
+  then begin
+    ForgetPendingSave(AFileName);
+    Exit;
+  end;
+
+  if not Assigned(FPendingFiles)
+  then begin
+    FPendingFiles := TStringList.Create;
+    FPendingTexts := TStringList.Create;
+  end;
+  var i := FPendingFiles.IndexOf(AFileName);
+  if (i >= 0)
+  then FPendingTexts[i] := AText
+  else begin
+    FPendingFiles.Add(AFileName);
+    FPendingTexts.Add(AText);
+  end;
+  FSaveRetries := 0;
+  SetTimer(Handle, TIMER_SAVE_RETRY, SAVE_RETRY_MS, nil);
+end;
+
+procedure TLinkbarWcl.RetryPendingSaves;
+begin
+  KillTimer(Handle, TIMER_SAVE_RETRY);
+  if not Assigned(FPendingFiles)
+  then Exit;
+
+  for var i := FPendingFiles.Count-1 downto 0
+  do begin
+    if WriteLinesFile(FPendingFiles[i], FPendingTexts[i], 1)
+    then begin
+      FPendingFiles.Delete(i);
+      FPendingTexts.Delete(i);
+    end;
+  end;
+
+  if (FPendingFiles.Count = 0)
+  then Exit;
+
+  Inc(FSaveRetries);
+  if (FSaveRetries < SAVE_RETRY_MAX)
+  then SetTimer(Handle, TIMER_SAVE_RETRY, SAVE_RETRY_MS, nil)
+  else begin
+    FPendingFiles.Clear;
+    FPendingTexts.Clear;
+    ShowSaveFailed;
+  end;
+end;
+
+procedure TLinkbarWcl.ShowSaveFailed;
+begin
+  var pt := Point(Width div 2, Height div 2);
+  MapWindowPoints(Handle, HWND_DESKTOP, pt, 1);
+  ToolTip.Activate(pt, L10NFind('Message.SaveFailed', 'Could not save the bar list (file in use)'), taCenter, taAlignBottom);
+  SetTimer(Handle, TIMER_SAVE_NOTICE, 4000, nil);
 end;
 
 procedure TLinkbarWcl.SaveLinks;
@@ -1011,11 +1231,48 @@ begin
       for var item in Items
       do sl.Add(ExtractFileName(item.FileName));
 
-      sl.SaveToFile(WorkDir + LINKSLIST_FILE_NAME, TEncoding.UTF8);
+      QueueSave(WorkDir + LINKSLIST_FILE_NAME, sl.Text);
+
+      // Items that stay visible when the bar is collapsed
+      sl.Clear;
+      for var item in Items
+      do if item.Pinned
+         then sl.Add(ExtractFileName(item.FileName));
+
+      if (sl.Count > 0)
+      then QueueSave(WorkDir + PINNED_FILE_NAME, sl.Text)
+      else begin
+        ForgetPendingSave(WorkDir + PINNED_FILE_NAME);
+        if FileExists(WorkDir + PINNED_FILE_NAME)
+        then DeleteFile(WorkDir + PINNED_FILE_NAME);
+      end;
     finally
       sl.Free;
     end;
   end;
+end;
+
+procedure TLinkbarWcl.LoadPinned;
+begin
+  var sl := TStringList.Create;
+  try
+    sl.CaseSensitive := False;
+    if FileExists(WorkDir + PINNED_FILE_NAME)
+    then sl.LoadFromFile(WorkDir + PINNED_FILE_NAME, TEncoding.UTF8);
+
+    for var item in Items
+    do item.Pinned := (sl.IndexOf(ExtractFileName(item.FileName)) >= 0);
+  finally
+    sl.Free;
+  end;
+end;
+
+{ Length taken by the pinned items when the bar is collapsed }
+function TLinkbarWcl.PinnedLength(const AVertical: Boolean): Integer;
+begin
+  Result := Items.PinnedWidth;
+  if (Result > 0)
+  then Inc(Result, DockPad);
 end;
 
 procedure TLinkbarWcl.SaveSettings;
@@ -1030,6 +1287,10 @@ begin
     // Write
     settings.Write(INI_MONITORNUM, FMonitorNum);
     settings.Write(INI_HIDE_FULLSCREEN, FHideOnFullscreen);
+    settings.Write(INI_COLLAPSE_FULLSCREEN, FCollapseOnFullscreen);
+    settings.Write(INI_ANIMATE_COLLAPSE, FAnimateCollapse);
+    settings.Write(INI_AUTOCOLLAPSE, FAutoCollapseSecs);
+    settings.Write(INI_TASKBAR_ICON, FTaskbarIcon);
     settings.Write(INI_PROFILE, FProfile);
     settings.Write(INI_EDGE, Integer(Align));
     settings.Write(INI_AUTOHIDE, AutoHide);
@@ -1069,6 +1330,7 @@ begin
     settings.Write(INI_BAR_STYLE, FBarStyle);
     settings.Write(INI_ZOOM, FZoomPercent);
     settings.Write(INI_DOCK_POS, FDockPos);
+    settings.Write(INI_COLLAPSED, FMacCollapsed);
     // Save
     settings.Close;
   end;
@@ -1089,8 +1351,81 @@ begin
   then MessageBox(Handle, PChar(SysErrorMessage(GetLastError)), 'Error', MB_ICONWARNING or MB_OK);
 end;
 
+{ --- Menús sin borde (estilo Sci-Fi) --- }
+const
+  LB_EVENT_SYSTEM_MENUPOPUPSTART = $0006;
+  LB_WINEVENT_OUTOFCONTEXT = $0000;
+  LB_DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+  LB_DWMWA_BORDER_COLOR = 34;
+  LB_DWMWCP_DONOTROUND = 1;
+  LB_DWMWA_COLOR_NONE = $FFFFFFFE;
+
+type
+  TLbWinEventProc = procedure(hWinEventHook: THandle; event: DWORD; hwnd: HWND;
+    idObject, idChild: LongInt; idEventThread, dwmsEventTime: DWORD); stdcall;
+
+function LbSetWinEventHook(eventMin, eventMax: DWORD; hmodWinEventProc: HMODULE;
+  pfnWinEventProc: TLbWinEventProc; idProcess, idThread, dwFlags: DWORD): THandle; stdcall;
+  external user32 name 'SetWinEventHook';
+function LbUnhookWinEvent(hWinEventHook: THandle): BOOL; stdcall;
+  external user32 name 'UnhookWinEvent';
+function LbDwmSetWindowAttribute(hwnd: HWND; dwAttribute: DWORD; pvAttribute: Pointer;
+  cbAttribute: DWORD): HRESULT; stdcall;
+  external 'dwmapi.dll' name 'DwmSetWindowAttribute';
+
+var
+  LbMenuHook: THandle = 0;
+  LbMenuHookRefs: Integer = 0;
+
+{ Quita el marco (borde blanco) de la ventana del menú #32768 }
+procedure LbMenuWinEvent(hWinEventHook: THandle; event: DWORD; hwnd: HWND;
+  idObject, idChild: LongInt; idEventThread, dwmsEventTime: DWORD); stdcall;
+var
+  cls: array[0..31] of Char;
+  st, exst: LONG_PTR;
+  v: DWORD;
+begin
+  if (hwnd = 0) or (GetClassName(hwnd, cls, Length(cls)) = 0) or (cls <> '#32768')
+  then Exit;
+
+  st := GetWindowLongPtr(hwnd, GWL_STYLE);
+  SetWindowLongPtr(hwnd, GWL_STYLE, st and not (WS_BORDER or WS_THICKFRAME or WS_DLGFRAME));
+  exst := GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+  SetWindowLongPtr(hwnd, GWL_EXSTYLE,
+    exst and not (WS_EX_WINDOWEDGE or WS_EX_CLIENTEDGE or WS_EX_DLGMODALFRAME or WS_EX_STATICEDGE));
+
+  // Windows 11: sin contorno DWM y sin esquinas redondeadas (ignorado en versiones anteriores)
+  v := LB_DWMWA_COLOR_NONE;
+  LbDwmSetWindowAttribute(hwnd, LB_DWMWA_BORDER_COLOR, @v, SizeOf(v));
+  v := LB_DWMWCP_DONOTROUND;
+  LbDwmSetWindowAttribute(hwnd, LB_DWMWA_WINDOW_CORNER_PREFERENCE, @v, SizeOf(v));
+
+  SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+    SWP_FRAMECHANGED or SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE);
+end;
+
+procedure LbInstallMenuHook;
+begin
+  Inc(LbMenuHookRefs);
+  if (LbMenuHook = 0)
+  then LbMenuHook := LbSetWinEventHook(LB_EVENT_SYSTEM_MENUPOPUPSTART, LB_EVENT_SYSTEM_MENUPOPUPSTART,
+    0, LbMenuWinEvent, GetCurrentProcessId, GetCurrentThreadId, LB_WINEVENT_OUTOFCONTEXT);
+end;
+
+procedure LbRemoveMenuHook;
+begin
+  Dec(LbMenuHookRefs);
+  if (LbMenuHookRefs <= 0) and (LbMenuHook <> 0)
+  then begin
+    LbUnhookWinEvent(LbMenuHook);
+    LbMenuHook := 0;
+    LbMenuHookRefs := 0;
+  end;
+end;
+
 procedure TLinkbarWcl.FormCreate(Sender: TObject);
 begin
+  LbInstallMenuHook;
   FCreated := False;
   CreateBitmaps;
 
@@ -1115,6 +1450,27 @@ begin
   imActionLine := TMenuItem.Create(pMenu);
   imActionLine.Caption := '-';
   pMenu.Items.Insert(2, imActionLine);
+  // Keep the item visible when the bar is collapsed (">>")
+  imPinned := TMenuItem.Create(pMenu);
+  imPinned.Caption := L10NFind('Menu.Pinned', 'Keep visible when collapsed');
+  imPinned.OnClick := imPinnedClick;
+  pMenu.Items.Insert(0, imPinned);
+  // Pin / unpin several items (bar menu, no item under the cursor)
+  imPinAllActions := TMenuItem.Create(pMenu);
+  imPinAllActions.Caption := L10NFind('Menu.PinAllActions', 'Keep all action buttons visible when collapsed');
+  imPinAllActions.OnClick := imPinAllActionsClick;
+  pMenu.Items.Insert(1, imPinAllActions);
+  imUnpinAll := TMenuItem.Create(pMenu);
+  imUnpinAll.Caption := L10NFind('Menu.UnpinAll', 'Clear all items kept visible when collapsed');
+  imUnpinAll.OnClick := imUnpinAllClick;
+  pMenu.Items.Insert(2, imUnpinAll);
+  // Options of the ">>" button menu (only shown there)
+  imAnimateCollapse := TMenuItem.Create(pMenu);
+  imAnimateCollapse.OnClick := imAnimateCollapseClick;
+  pMenu.Items.Insert(3, imAnimateCollapse);
+  imAutoCollapse := TMenuItem.Create(pMenu);
+  imAutoCollapse.OnClick := imAutoCollapseClick;
+  pMenu.Items.Insert(4, imAutoCollapse);
   // Profiles (sub-menu filled when the menu opens)
   imProfiles := TMenuItem.Create(pMenu);
   imProfiles.Caption := L10NFind('Menu.Profile', 'Profile');
@@ -1155,8 +1511,8 @@ begin
   oAppBar.QueryAutoHide := QueryHideEvent;
 
   // Dock mode: floating bar, no autohide
-  oAppBar.Floating := IsDock;
-  if IsDock then FAutoHide := False;
+  oAppBar.Floating := IsDock or IsTaskbarIcon;
+  if IsDock or IsTaskbarIcon then FAutoHide := False;
 
   if not AutoHide then oAppBar.Loaded
   else AutoHide := TRUE;
@@ -1169,6 +1525,10 @@ begin
   CreateLinkbarTasksJumplist;
 
   DoDelayedAutoHide(1000);
+
+  // Taskbar icon mode: hide the bar once the form has been shown
+  if IsTaskbarIcon
+  then PostMessage(Handle, LM_TASKBARMODE, 0, 0);
 end;
 
 procedure TLinkbarWcl.L10n;
@@ -1189,6 +1549,7 @@ end;
 
 procedure TLinkbarWcl.FormDestroy(Sender: TObject);
 begin
+  LbRemoveMenuHook;
   UnregisterBitBucketNotify(BitBucketNotify);
   UnregisterHotkeyNotify(Handle);
 
@@ -1200,6 +1561,8 @@ begin
 
   if (not FRemoved)
   then SaveLinks;
+  FreeAndNil(FPendingFiles);
+  FreeAndNil(FPendingTexts);
 
   ThemeCloseData;
 
@@ -1403,6 +1766,8 @@ begin
   if AutoHide and FAutoHiden
   then Exit;
 
+  KillTimer(Handle, TIMER_AUTOCOLLAPSE);  // the bar is being used
+  FBtnClickHandled := False;
   FMousePosDown := Point(X, Y);
   // window that was in front before clicking the bar (for minimize on click)
   if (GetForegroundWindow <> Handle)
@@ -1419,6 +1784,26 @@ begin
     FSlideStartPos := BoundsRect.TopLeft;
     SetCapture(Handle);
     ToolTip.Cancel;
+    Exit;
+  end;
+
+  if (Button = mbLeft) and FShowSysWidgets and PtInRect(FBtnCollapseRect, Point(X, Y)) then
+  begin
+    ToolTip.Cancel;
+    // The layout changes under the cursor: the mouse up would fall on the CPU/RAM widgets (Task Manager)
+    FBtnClickHandled := True;
+    if FCollapsedByIdle
+    then begin
+      // Collapsed for inactivity: the click only expands again (saved state untouched)
+      FCollapsedByIdle := False;
+    end
+    else begin
+      FMacCollapsed := not FMacCollapsed;
+      TSettingsFile.Write(FSettingsFileName, INI_COLLAPSED, FMacCollapsed);
+    end;
+    if CanAnimateCollapse
+    then StartCollapseAnim(FMacCollapsed)
+    else UpdateWindowSize;
     Exit;
   end;
 
@@ -1479,6 +1864,31 @@ begin
     end;
   end;
 
+  if FShowSysWidgets then
+  begin
+    var isHot: Boolean;
+    isHot := PtInRect(FBtnCollapseRect, Point(X, Y));
+    if isHot <> FBtnCollapseHot then
+    begin
+      FBtnCollapseHot := isHot;
+      UpdateWindow;
+
+      // Hint of the ">>" / "<<" button
+      if isHot and TooltipShow
+      then begin
+        var hintPt: TPoint;
+        var hintHA: TAlignment;
+        var hintVA: TVerticalAlignment;
+        TooltipAnchor(FBtnCollapseRect, hintPt, hintHA, hintVA);
+        if IsCollapsed
+        then ToolTip.Activate(hintPt, L10NFind('Hint.Expand', 'Expand the bar'), hintHA, hintVA)
+        else ToolTip.Activate(hintPt, L10NFind('Hint.Collapse', 'Collapse: pinned items and CPU/RAM stay'), hintHA, hintVA);
+      end
+      else if not isHot
+      then ToolTip.Cancel;
+    end;
+  end;
+
   if FMouseLeftDown
   then begin
     if FMouseDragLinkbar
@@ -1535,6 +1945,13 @@ begin
     Exit;
   end;
 
+  // Release of the ">>" / "<<" click
+  if FBtnClickHandled and (Button = mbLeft)
+  then begin
+    FBtnClickHandled := False;
+    Exit;
+  end;
+
   // End of Ctrl+drag of the dock
   if FDockSliding and (Button = mbLeft)
   then begin
@@ -1579,6 +1996,8 @@ begin
              and FShowSysWidgets
              and PtInRect(SysWidgetRect(Width, Height), Point(X, Y))
              and PtInRect(SysWidgetRect(Width, Height), FMousePosDown)
+             and not PtInRect(FBtnCollapseRect, Point(X, Y))
+             and not PtInRect(FBtnCollapseRect, FMousePosDown)
         then begin // click on CPU/RAM widgets: open Task Manager
           ShellExecute(0, 'open', 'taskmgr.exe', nil, nil, SW_SHOWNORMAL);
         end
@@ -1724,6 +2143,17 @@ end;
 function LB_SHQueryUserNotificationState(out pquns: Integer): HRESULT; stdcall;
   external 'shell32.dll' name 'SHQueryUserNotificationState';
 
+{ Taskbar, Start menu...: not a window to send the keys of an action button to }
+function IsShellUiWindow(const AWnd: HWND): Boolean;
+var cls: array[0..63] of Char;
+begin
+  cls[0] := #0;
+  GetClassName(AWnd, cls, Length(cls));
+  Result := MatchText(PChar(@cls[0]), ['Shell_TrayWnd', 'Shell_SecondaryTrayWnd',
+    'NotifyIconOverflowWindow', 'TopLevelWindowForOverflowXamlIsland',
+    'Windows.UI.Core.CoreWindow', 'XamlExplorerHostIslandWindow', 'TaskListThumbnailWnd']);
+end;
+
 function TLinkbarWcl.IsOurWindow(const AWnd: HWND): Boolean;
 var pid: DWORD;
 begin
@@ -1748,11 +2178,11 @@ var
   full: Boolean;
 begin
   fg := GetForegroundWindow;
-  if not IsOurWindow(fg)
+  if not IsOurWindow(fg) and not IsShellUiWindow(fg)
   then FLastForeignWnd := fg;
 
   full := False;
-  if FHideOnFullscreen and (fg <> 0) and not IsOurWindow(fg)
+  if (FHideOnFullscreen or FCollapseOnFullscreen) and (fg <> 0) and not IsOurWindow(fg) and not IsTaskbarIcon
   then begin
     // Windows own detection (games, presentations)
     state := 0;
@@ -1782,16 +2212,31 @@ begin
     end;
   end;
 
-  if (full <> FHiddenByFullscreen)
+  // "Hide" prevails over "collapse" when both are enabled
+  const hideIt = full and FHideOnFullscreen;
+  const collapseIt = full and FCollapseOnFullscreen and not FHideOnFullscreen;
+
+  if (hideIt <> FHiddenByFullscreen)
   then begin
-    FHiddenByFullscreen := full;
-    if full
+    FHiddenByFullscreen := hideIt;
+    if hideIt
     then begin
       CloseThumbs;
       ToolTip.Cancel;
       ShowWindow(Handle, SW_HIDE);
     end
     else ShowWindow(Handle, SW_SHOWNA);
+  end;
+
+  if (collapseIt <> FCollapsedByFullscreen)
+  then begin
+    FCollapsedByFullscreen := collapseIt;
+    if collapseIt
+    then begin
+      CloseThumbs;
+      ToolTip.Cancel;
+    end;
+    UpdateWindowSize;
   end;
 end;
 
@@ -1802,6 +2247,240 @@ begin
   then begin
     FHiddenByFullscreen := False;
     ShowWindow(Handle, SW_SHOWNA);
+  end;
+end;
+
+function TLinkbarWcl.IsCollapsed: Boolean;
+begin
+  Result := (FMacCollapsed or FCollapsedByFullscreen or FCollapsedByIdle) and not FAnimRender;
+end;
+
+function TLinkbarWcl.CanAnimateCollapse: Boolean;
+begin
+  Result := FAnimateCollapse and IsDock and Assigned(oAppBar)
+        and (not FAnimating) and (not FAutoHiden) and IsWindowVisible(Handle);
+end;
+
+{ The expanded bitmap is rendered once; each frame only moves/crops the window
+  keeping the far edge fixed (pinned items and CPU/RAM stay in place).
+  Called after FMacCollapsed already has its new value }
+procedure TLinkbarWcl.StartCollapseAnim(const AToCollapsed: Boolean);
+var
+  vertical: Boolean;
+  lenExp, lenCol: Integer;
+begin
+  vertical := IsVertical(Align);
+
+  FAnimBuild := True;
+  FAnimRender := True;
+  try
+    oAppBar.AppBarPosChanged;
+  finally
+    FAnimBuild := False;
+    FAnimRender := False;
+  end;
+
+  if vertical
+  then lenExp := FAnimRectExp.Height
+  else lenExp := FAnimRectExp.Width;
+  lenCol := Min(ItemsMargin + PinnedLength(vertical) + SysWidgetLength(vertical), lenExp);
+
+  if (lenCol >= lenExp)
+  then begin
+    UpdateWindowSize;  // nothing to animate
+    Exit;
+  end;
+
+  if AToCollapsed
+  then begin
+    FAnimFrom := lenExp;
+    FAnimTo := lenCol;
+  end
+  else begin
+    FAnimFrom := lenCol;
+    FAnimTo := lenExp;
+  end;
+
+  CloseThumbs;
+  ToolTip.Cancel;
+  FLockAutoHide := True;
+  FAnimStart := GetTickCount;
+  FAnimating := True;
+  SetTimer(Handle, TIMER_COLLAPSE_ANIM, 16, nil);
+  CollapseAnimStep;
+end;
+
+procedure TLinkbarWcl.CollapseAnimStep;
+var
+  t, e: Double;
+  len: Integer;
+  r: TRect;
+  pt1, pt2: TPoint;
+  sz: TSize;
+begin
+  if not FAnimating
+  then Exit;
+
+  t := (GetTickCount - FAnimStart) / COLLAPSE_ANIM_MS;
+  if (t > 1)
+  then t := 1;
+  // ease in-out
+  if (t < 0.5)
+  then e := 2 * t * t
+  else e := 1 - Sqr(-2 * t + 2) / 2;
+
+  len := FAnimFrom + Round((FAnimTo - FAnimFrom) * e);
+
+  if IsVertical(Align)
+  then begin
+    r := Rect(FAnimRectExp.Left, FAnimRectExp.Bottom - len, FAnimRectExp.Right, FAnimRectExp.Bottom);
+    pt2 := Point(0, BitmapPanel.Height - r.Height);
+  end
+  else begin
+    r := Rect(FAnimRectExp.Right - len, FAnimRectExp.Top, FAnimRectExp.Right, FAnimRectExp.Bottom);
+    pt2 := Point(BitmapPanel.Width - r.Width, 0);
+  end;
+
+  pt1 := r.TopLeft;
+  sz := TSize.Create(r.Width, r.Height);
+  UpdateLayeredWindow(Handle, 0, @pt1, @sz, BitmapPanel.Dc, @pt2, 0, @bf, ULW_ALPHA);
+
+  if (t >= 1)
+  then begin
+    FinishCollapseAnim;
+    UpdateWindowSize;  // final layout (collapsed or expanded)
+  end;
+end;
+
+procedure TLinkbarWcl.FinishCollapseAnim;
+begin
+  if not FAnimating
+  then Exit;
+  KillTimer(Handle, TIMER_COLLAPSE_ANIM);
+  FAnimating := False;
+  FLockAutoHide := False;
+end;
+
+{ Position and alignment of a tooltip next to ARect (client coordinates -> screen) }
+procedure TLinkbarWcl.TooltipAnchor(const ARect: TRect; out APt: TPoint; out AHA: TAlignment; out AVA: TVerticalAlignment);
+begin
+  APt := ARect.CenterPoint;
+  AHA := taLeftJustify;
+  AVA := taAlignBottom;
+  case Align of
+    EPanelAlignLeft:
+      begin
+        APt.X := ARect.Right + TOOLTIP_OFFSET;
+        AVA := taVerticalCenter;
+        AHA := taLeftJustify;
+      end;
+    EPanelAlignTop:
+      begin
+        APt.Y := ARect.Bottom + TOOLTIP_OFFSET;
+        AVA := taAlignBottom;
+        AHA := taCenter;
+      end;
+    EPanelAlignRight:
+      begin
+        APt.X := ARect.Left - TOOLTIP_OFFSET;
+        AVA := taVerticalCenter;
+        AHA := taRightJustify;
+      end;
+    EPanelAlignBottom:
+      begin
+        APt.Y := ARect.Top - TOOLTIP_OFFSET;
+        AVA := taAlignTop;
+        AHA := taCenter;
+      end;
+  end;
+  MapWindowPoints(Handle, HWND_DESKTOP, APt, 1);
+end;
+
+{ Small dot in the corner of the icons that stay visible when the bar is collapsed }
+procedure TLinkbarWcl.DrawPinnedMark(const ABitmap: THBitmap; const AItem: TItemBase; const ARect: TRect);
+var
+  gp: IGPGraphics;
+  brush: IGPBrush;
+  d: Integer;
+  color: Cardinal;
+begin
+  if (not AItem.Pinned) or IsCollapsed
+  then Exit;
+
+  d := Max(4, ScaleDimension(5));
+  color := SwapRedBlue(GetImmersiveColorFromName('ImmersiveSystemAccent'));
+  if ((color shr 24) = 0)
+  then color := color or $FF000000;
+
+  gp := TGPGraphics.Create(ABitmap.Dc);
+  brush := TGPSolidBrush.Create(color);
+  GPFillRoundRect(gp, brush, Bounds(ARect.Right - d - 2, ARect.Top + 2, d, d), d div 2);
+end;
+
+procedure TLinkbarWcl.ArmAutoCollapse;
+begin
+  KillTimer(Handle, TIMER_AUTOCOLLAPSE);
+  if (FAutoCollapseSecs > 0) and FShowSysWidgets and (not IsCollapsed)
+  then SetTimer(Handle, TIMER_AUTOCOLLAPSE, Cardinal(FAutoCollapseSecs) * 1000, nil);
+end;
+
+{ Nobody used the bar for a while: collapse it (unless it is busy) }
+procedure TLinkbarWcl.AutoCollapseTick;
+var
+  pt: TPoint;
+begin
+  KillTimer(Handle, TIMER_AUTOCOLLAPSE);
+  if (FAutoCollapseSecs <= 0) or IsCollapsed or (not FShowSysWidgets)
+  then Exit;
+
+  GetCursorPos(pt);
+  if FAnimating or FAutoHiden or FHiddenByFullscreen
+     or FLockAutoHide or FLockHotIndex or FMouseLeftDown or FDockSliding
+     or PtInRect(BoundsRect, pt)
+  then begin
+    ArmAutoCollapse;  // busy: try again later
+    Exit;
+  end;
+
+  FCollapsedByIdle := True;
+  if CanAnimateCollapse
+  then StartCollapseAnim(True)
+  else UpdateWindowSize;
+end;
+
+procedure TLinkbarWcl.SetAutoCollapseSecs(AValue: Integer);
+begin
+  FAutoCollapseSecs := Max(0, AValue);
+  if (FAutoCollapseSecs = 0) and FCollapsedByIdle
+  then begin
+    FCollapsedByIdle := False;
+    UpdateWindowSize;
+  end;
+  if HandleAllocated
+  then ArmAutoCollapse;
+end;
+
+procedure TLinkbarWcl.imAnimateCollapseClick(Sender: TObject);
+begin
+  FAnimateCollapse := not FAnimateCollapse;
+  TSettingsFile.Write(FSettingsFileName, INI_ANIMATE_COLLAPSE, FAnimateCollapse);
+end;
+
+procedure TLinkbarWcl.imAutoCollapseClick(Sender: TObject);
+begin
+  if (FAutoCollapseSecs > 0)
+  then SetAutoCollapseSecs(0)
+  else SetAutoCollapseSecs(AUTOCOLLAPSE_DEFAULT_SECS);
+  TSettingsFile.Write(FSettingsFileName, INI_AUTOCOLLAPSE, FAutoCollapseSecs);
+end;
+
+procedure TLinkbarWcl.SetCollapseOnFullscreen(AValue: Boolean);
+begin
+  FCollapseOnFullscreen := AValue;
+  if not AValue and FCollapsedByFullscreen
+  then begin
+    FCollapsedByFullscreen := False;
+    UpdateWindowSize;
   end;
 end;
 
@@ -1880,6 +2559,38 @@ begin
   then SHDeleteOp(Handle, Items[FItemPopup].FileName, True);
 end;
 
+procedure TLinkbarWcl.imPinnedClick(Sender: TObject);
+begin
+  if not IsItemIndex(FItemPopup)
+  then Exit;
+
+  Items[FItemPopup].Pinned := not Items[FItemPopup].Pinned;
+  ApplyPinned;
+end;
+
+{ After changing the pinned flags: pinned items go to the end, save and re-layout }
+procedure TLinkbarWcl.ApplyPinned;
+begin
+  Items.PinnedToEnd;
+  SaveLinks;
+  UpdateWindowSize;
+end;
+
+procedure TLinkbarWcl.imPinAllActionsClick(Sender: TObject);
+begin
+  for var item in Items
+  do if (item is TItemAction)
+     then item.Pinned := True;
+  ApplyPinned;
+end;
+
+procedure TLinkbarWcl.imUnpinAllClick(Sender: TObject);
+begin
+  for var item in Items
+  do item.Pinned := False;
+  ApplyPinned;
+end;
+
 { ---------- profiles ---------- }
 
 function TLinkbarWcl.ProfilesDir: string;
@@ -1925,6 +2636,7 @@ begin
     Items.LoadIcon(item);
   UpdateRunningState;
   oAppBar.AppBarPosChanged;
+  UpdateTaskbarIcon;
 end;
 
 procedure TLinkbarWcl.SwitchProfile(const AName: string);
@@ -2244,7 +2956,6 @@ var
   iconsize: Integer;
   icon: HICON;
   bmp: HBITMAP;
-  caption: string;
 begin
   FPopupMenu := CreatePopupMenu;
   if (FPopupMenu = 0)
@@ -2252,6 +2963,19 @@ begin
 
   BuildProfilesMenu;
   var isAction := IsItemIndex(FItemPopup) and (Items[FItemPopup] is TItemAction);
+
+  // The menu is owner-drawn (no check mark): the text tells the current state
+  if IsItemIndex(FItemPopup) and Items[FItemPopup].Pinned
+  then imPinned.Caption := L10NFind('Menu.Unpinned', 'Do not keep visible when collapsed')
+  else imPinned.Caption := L10NFind('Menu.Pinned', 'Keep visible when collapsed');
+
+  // Options of the ">>" button menu: the text tells the current state
+  if FAnimateCollapse
+  then imAnimateCollapse.Caption := L10NFind('Menu.AnimateOn', 'Turn off collapse animation')
+  else imAnimateCollapse.Caption := L10NFind('Menu.AnimateOff', 'Turn on collapse animation');
+  if (FAutoCollapseSecs > 0)
+  then imAutoCollapse.Caption := L10NFind('Menu.AutoCollapseOn', 'Turn off automatic collapse')
+  else imAutoCollapse.Caption := Format(L10NFind('Menu.AutoCollapseOff', 'Collapse automatically after %d s without use'), [AUTOCOLLAPSE_DEFAULT_SECS]);
 
   //for i := 0 to pMenu.Items.Count-1 do
   for var item: TMenuItem in pMenu.Items
@@ -2266,16 +2990,52 @@ begin
       then Continue;
     end;
 
+    // Menu of the ">>" button: only its own options. Normal menu: without them
+    if FCollapseMenu
+    then begin
+      if not ((item = imPinAllActions) or (item = imUnpinAll)
+              or (item = imAnimateCollapse) or (item = imAutoCollapse))
+      then Continue;
+    end
+    else if (item = imAnimateCollapse) or (item = imAutoCollapse)
+    then Continue;
+
     // "Edit/Delete action" only for action buttons
     if ((item = imEditAction) or (item = imDeleteAction) or (item = imActionLine))
        and not isAction
     then Continue;
+
+    // "Keep visible when collapsed" only for an item (not separators nor the bar)
+    if (item = imPinned)
+       and (not IsItemIndex(FItemPopup) or Items.IsSeparator(Items[FItemPopup]))
+    then Continue;
+
+    // "Keep all actions / clear all" only in the bar menu, when they change something
+    if (item = imPinAllActions) or (item = imUnpinAll)
+    then begin
+      if IsItemIndex(FItemPopup)
+      then Continue;
+      var any := False;
+      for var it in Items
+      do if ((item = imPinAllActions) and (it is TItemAction) and not it.Pinned)
+            or ((item = imUnpinAll) and it.Pinned)
+         then begin
+           any := True;
+           Break;
+         end;
+      if not any
+      then Continue;
+    end;
 
     Flags := MF_BYCOMMAND;
 
     if (item.IsLine)
     then Flags := Flags or MF_SEPARATOR
     else Flags := Flags or MF_STRING;
+
+    if (item = imPinned)
+       and IsItemIndex(FItemPopup) and Items[FItemPopup].Pinned
+    then Flags := Flags or MF_CHECKED;
 
     if (item = imLockBar)
        and (FLockLinkbar)
@@ -2287,60 +3047,49 @@ begin
 
     if (item.Count = 0)
     then begin
-      caption := item.Caption;
-      //if (item = imClose)
-      //then caption := caption + #9 + 'Alt+F4';
-      AppendMenu(FPopupMenu, Flags, item.Command, PChar(caption));
+      // Convertir a OwnerDraw
+      Flags := (Flags and not MF_STRING) or MF_OWNERDRAW;
+      AppendMenu(FPopupMenu, Flags, item.Command, PChar(item));
     end
     else begin
       var subMenu := CreatePopupMenu;
 
       for var subItem: TMenuItem in item
       do begin
-        Flags := MF_BYCOMMAND;
+        Flags := MF_BYCOMMAND or MF_OWNERDRAW;
         if (subItem.IsLine)
-        then Flags := Flags or MF_SEPARATOR
-        else Flags := Flags or MF_STRING;
+        then Flags := Flags or MF_SEPARATOR;
         if subItem.Checked
         then Flags := Flags or MF_CHECKED;
-        AppendMenu(subMenu, Flags, subItem.Command, PChar(subItem.Caption));
+        AppendMenu(subMenu, Flags, subItem.Command, PChar(subItem));
       end;
 
-      Flags := MF_POPUP or MF_STRING;
-      AppendMenu(FPopupMenu, Flags, subMenu, PChar(item.Caption));
+      Flags := MF_POPUP or MF_OWNERDRAW;
+      AppendMenu(FPopupMenu, Flags, subMenu, PChar(item));
     end;
   end;
 
-  // Set icon&default for "Close" or "Close All" menu item
-  mii := Default(TMenuItemInfo);
-  mii.cbSize := SizeOf(mii);
-  mii.fMask := MIIM_BITMAP or MIIM_STATE;
-  mii.fState := MFS_DEFAULT;
-  mii.hbmpItem := HBMMENU_POPUP_CLOSE;
-  if (AShift)
-  then SetMenuItemInfo(FPopupMenu, imCloseAll.Command, False, mii)
-  else SetMenuItemInfo(FPopupMenu, imClose.Command, False, mii);
-
-  // Set icon for "New shortcut" menu item
-  bmp := 0;
-  iconsize := GetSystemMetrics(SM_CXSMICON);
-  icon := LoadImage(GetModuleHandle('shell32.dll'), MakeIntResource(16769), IMAGE_ICON, iconsize, iconsize, LR_DEFAULTCOLOR);
-  if (icon <> 0)
-  then begin
-    bmp := BitmapFromIcon(icon, iconsize);
-    DestroyIcon(icon);
-    mii := Default(TMenuItemInfo);
-    mii.cbSize := SizeOf(mii);
-    mii.fMask := MIIM_BITMAP;
-    mii.hbmpItem := bmp;
-    SetMenuItemInfo(FPopupMenu, imNewShortcut.Command, False, mii);
-  end;
-
+  // [OWNERDRAW] Se omiten los íconos nativos de Windows porque el dibujado Sci-Fi
+  // es manual y los íconos nativos (MIIM_BITMAP) rompen la selección y los colores oscuros.
+  
   mi := Default(TMenuInfo);
   mi.cbSize := SizeOf(TMenuInfo);
-  mi.fMask := MIM_STYLE;
-  mi.dwStyle := MNS_CHECKORBMP;
+  mi.fMask := MIM_STYLE or MIM_BACKGROUND;
+  mi.dwStyle := MNS_NOCHECK; // Quita el marco/columna izquierda de iconos de Windows clásico
+
+  // Creamos el brush para el marco exterior/fondo
+  var hbrBg := CreateSolidBrush(RGB(10, 20, 35)); // Azul muy oscuro Sci-Fi
+  mi.hbrBack := hbrBg;
   SetMenuInfo(FPopupMenu, mi);
+
+  // Los submenús (ej. Perfil, Nuevo) también necesitan el fondo oscuro y sin columna de checks;
+  // si no, se ve el fondo claro por defecto entre los ítems.
+  for var si := 0 to GetMenuItemCount(FPopupMenu) - 1
+  do begin
+    var hSub := GetSubMenu(FPopupMenu, si);
+    if (hSub <> 0)
+    then SetMenuInfo(hSub, mi);
+  end;
 
   MapWindowPoints(Handle, HWND_DESKTOP, APt, 1);
 
@@ -2362,6 +3111,7 @@ begin
       Items[FItemPopup].DoPopupMenu(Handle, APt, AShift, FPopupMenu);
     end;
   finally
+    DeleteObject(hbrBg);
     FLockHotIndex := False;
     if (WindowFromPoint(MakePoint(GetMessagePos)) <> Handle)
     then begin
@@ -2371,6 +3121,121 @@ begin
   end;
 
   DeleteObject(bmp);
+end;
+
+procedure TLinkbarWcl.WMMeasureItem(var Message: TWMMeasureItem);
+var
+  str: string;
+  size: TSize;
+  dc: HDC;
+  fnt0: HGDIOBJ;
+  item: TMenuItem;
+begin
+  if Message.MeasureItemStruct^.CtlType = ODT_MENU then
+  begin
+    item := TMenuItem(Message.MeasureItemStruct^.itemData);
+    if item = nil then Exit;
+    if item.IsLine then
+    begin
+      Message.MeasureItemStruct^.itemWidth := 10;
+      Message.MeasureItemStruct^.itemHeight := 12;
+    end
+    else
+    begin
+      dc := GetDC(Handle);
+      fnt0 := SelectObject(dc, Screen.IconFont.Handle);
+      str := item.Caption;
+      str := StringReplace(str, '&', '', [rfReplaceAll]);
+      GetTextExtentPoint32(dc, PChar(str), Length(str), size);
+      SelectObject(dc, fnt0);
+      ReleaseDC(Handle, dc);
+      Message.MeasureItemStruct^.itemWidth := size.cx + 50; // Margen
+      Message.MeasureItemStruct^.itemHeight := 28;
+    end;
+  end else
+    inherited;
+end;
+
+procedure TLinkbarWcl.WMDrawItem(var Message: TWMDrawItem);
+var
+  dc: HDC;
+  r, tr: TRect;
+  item: TMenuItem;
+  gp: TGPGraphics;
+  brushFill, brushSel: TGPSolidBrush;
+  str: string;
+  fnt0: HGDIOBJ;
+begin
+  if Message.DrawItemStruct^.CtlType = ODT_MENU then
+  begin
+    item := TMenuItem(Message.DrawItemStruct^.itemData);
+    if item = nil then Exit;
+    dc := Message.DrawItemStruct^.hDC;
+    r := Message.DrawItemStruct^.rcItem;
+    
+    gp := TGPGraphics.Create(dc);
+    
+    // Fondo general gris muy oscuro
+    brushFill := TGPSolidBrush.Create($FF101010);
+    GPFillRoundRect(gp, brushFill, r, 0);
+    brushFill := nil;
+    
+    // Selección en azul translúcido
+    if (Message.DrawItemStruct^.itemState and ODS_SELECTED) <> 0 then
+    begin
+      brushSel := TGPSolidBrush.Create($3300AAFF);
+      tr := r;
+      InflateRect(tr, -2, -2);
+      GPFillRoundRect(gp, brushSel, tr, 4);
+      brushSel := nil;
+    end;
+    
+    if item.IsLine then
+    begin
+      brushFill := TGPSolidBrush.Create($FF333333);
+      tr := r;
+      tr.Top := r.Top + r.Height div 2;
+      tr.Bottom := tr.Top + 1;
+      tr.Left := tr.Left + 8;
+      tr.Right := tr.Right - 8;
+      GPFillRoundRect(gp, brushFill, tr, 0);
+      brushFill := nil;
+    end
+    else
+    begin
+      str := item.Caption;
+      str := StringReplace(str, '&', '', [rfReplaceAll]);
+      
+      fnt0 := SelectObject(dc, Screen.IconFont.Handle);
+      SetBkMode(dc, TRANSPARENT);
+      if (Message.DrawItemStruct^.itemState and ODS_SELECTED) <> 0 then
+        SetTextColor(dc, RGB(0, 200, 255)) // Azul Sci-Fi
+      else if item.Enabled then
+        SetTextColor(dc, RGB(140, 165, 180)) // Celeste agrisado tenue (menor contraste)
+      else
+        SetTextColor(dc, RGB(70, 80, 90));
+
+      r.Left := r.Left + 20;
+      DrawText(dc, PChar(str), Length(str), r, DT_SINGLELINE or DT_VCENTER);
+      
+      if item.Count > 0 then
+      begin
+        r.Left := Message.DrawItemStruct^.rcItem.Right - 20;
+        DrawText(dc, PChar('>'), 1, r, DT_SINGLELINE or DT_VCENTER);
+      end;
+      
+      SelectObject(dc, fnt0);
+    end;
+    
+    gp := nil;
+  end else
+    inherited;
+end;
+
+procedure TLinkbarWcl.WMInitMenuPopup(var Message: TWMInitMenuPopup);
+begin
+  // El borde del menú se quita en LbMenuWinEvent (WinEventHook de menús)
+  inherited;
 end;
 
 procedure TLinkbarWcl.OnFormJumplistDestroy(Sender: TObject);
@@ -2436,6 +3301,20 @@ begin
 
   var shift := GetKeyState(VK_SHIFT) < 0;
 
+  // Right click on ">>" / "<<": menu with the collapse options
+  if FShowSysWidgets
+     and (FItemPopup = ITEM_NONE)
+     and PtInRect(FBtnCollapseRect, pt)
+  then begin
+    FCollapseMenu := True;
+    try
+      DoPopupMenu(pt, shift);
+    finally
+      FCollapseMenu := False;
+    end;
+    Exit;
+  end;
+
   if (FItemPopup = ITEM_NONE)
      or (shift) // show extended contextmenu for item with jumplist
      or (Items[FItemPopup] is TItemGroup) // groups: menu with Rename/Delete, no jumplist
@@ -2445,8 +3324,8 @@ end;
 
 procedure TLinkbarWcl.SetAutoHide(AValue: Boolean);
 begin
-  // Dock mode has no autohide
-  if IsDock and AValue
+  // Dock and taskbar icon modes have no autohide
+  if (IsDock or IsTaskbarIcon) and AValue
   then begin
     FAutoHide := False;
     Exit;
@@ -2620,42 +3499,7 @@ begin
      and (FHotIndex >= 0)
      and (not Items.IsSeparator(Items[FHotIndex]))
   then begin
-    const r = Items[FHotIndex].Rect;
-    case Align of
-      EPanelAlignLeft:
-        begin
-          Pt.X := r.Right + TOOLTIP_OFFSET;
-          Pt.Y := r.CenterPoint.Y;
-          VA := taVerticalCenter;
-          HA := taLeftJustify;
-        end;
-      EPanelAlignTop:
-        begin
-          Pt.X := r.CenterPoint.X;
-          Pt.Y := r.Bottom + TOOLTIP_OFFSET;
-          VA := taAlignBottom;
-          HA := taCenter;
-        end;
-      EPanelAlignRight:
-        begin
-          Pt.X := r.Left - TOOLTIP_OFFSET;
-          Pt.Y := r.CenterPoint.Y;
-          VA := taVerticalCenter;
-          HA := taRightJustify;
-        end;
-      EPanelAlignBottom:
-        begin
-          Pt.X := r.CenterPoint.X;
-          Pt.Y := r.Top - TOOLTIP_OFFSET;
-          VA := taAlignTop;
-          HA := taCenter;
-        end
-      else begin
-        HA := taLeftJustify;
-        VA := taAlignBottom;
-      end;
-    end;
-    MapWindowPoints(Handle, HWND_DESKTOP, Pt, 1);
+    TooltipAnchor(Items[FHotIndex].Rect, Pt, HA, VA);
     if (Items[FHotIndex] is TItemAction)
     then ToolTip.Activate(Pt, TItemAction(Items[FHotIndex]).Description, HA, VA)
     else ToolTip.Activate(Pt, Items[FHotIndex].Caption, HA, VA);
@@ -2736,8 +3580,9 @@ begin
   Items.Sizes.Separator := SeparatorWidth;
   Items.Sizes.Margin := ItemsMargin;
   Items.Sizes.ZoomRoom := ZoomRoom;
-  Items.Sizes.ZoomBefore := ZoomBefore;
+  Items.Sizes.ZoomOffset := ZoomRoom div 2;
   Items.Sizes.Reserved := SysWidgetLength(AVertical);
+  Items.Sizes.OnlyPinned := IsCollapsed;
   Items.UpdateLines(AVertical, AWidth, AHeight);
 
   if (AVertical)
@@ -2754,6 +3599,14 @@ begin
   // Dock mode: small floating bar centered on the edge
   if IsDock
   then DockBounds(x, y, w, h);
+
+  // Animation start: only render the expanded bitmap, the window is not changed
+  if FAnimBuild
+  then begin
+    FAnimRectExp := Bounds(x, y, w, h);
+    RecreateMainBitmap(w, h);
+    Exit;
+  end;
 
   FBeforeAutoHideBound := Bounds(x, y, w, h);
   RecreateMainBitmap(w, h);
@@ -2802,8 +3655,9 @@ begin
   Items.Sizes.Separator := SeparatorWidth;
   Items.Sizes.Margin := ItemsMargin;
   Items.Sizes.ZoomRoom := ZoomRoom;
-  Items.Sizes.ZoomBefore := ZoomBefore;
+  Items.Sizes.ZoomOffset := ZoomRoom div 2;
   Items.Sizes.Reserved := SysWidgetLength(IsVertical(Align));
+  Items.Sizes.OnlyPinned := IsCollapsed;
   Items.UpdateLines(IsVertical(Align), Width, Height);
 
   t := Top;
@@ -2856,6 +3710,11 @@ end;
 procedure TLinkbarWcl.WndProc(var Msg: TMessage);
 begin
   case Msg.Msg of
+    LM_TASKBARMODE:
+      begin
+        ApplyTaskbarMode;
+        Exit;
+      end;
     //CUSTOM_ABN_FULLSCREENAPP:
     //  begin
     //    oAppBar.AppBarFullScreenApp(Msg.LParam <> 0);
@@ -2989,7 +3848,7 @@ begin
       begin
         // remember the window in front before the bar gets activated
         FForegroundAtMouseDown := GetForegroundWindow;
-        if not IsOurWindow(FForegroundAtMouseDown)
+        if not IsOurWindow(FForegroundAtMouseDown) and not IsShellUiWindow(FForegroundAtMouseDown)
         then FLastForeignWnd := FForegroundAtMouseDown;
       end;
     WM_MOUSEWHEEL:
@@ -3030,6 +3889,27 @@ begin
           TIMER_FOREGROUND:
             begin
               CheckForeground;
+              Exit;
+            end;
+          TIMER_AUTOCOLLAPSE:
+            begin
+              AutoCollapseTick;
+              Exit;
+            end;
+          TIMER_COLLAPSE_ANIM:
+            begin
+              CollapseAnimStep;
+              Exit;
+            end;
+          TIMER_SAVE_RETRY:
+            begin
+              RetryPendingSaves;
+              Exit;
+            end;
+          TIMER_SAVE_NOTICE:
+            begin
+              KillTimer(Handle, TIMER_SAVE_NOTICE);
+              ToolTip.Cancel;
               Exit;
             end;
           TIMER_THUMBS:
@@ -3346,6 +4226,7 @@ end;
 
 procedure TLinkbarWcl.FormMouseEnter(Sender: TObject);
 begin
+  KillTimer(Handle, TIMER_AUTOCOLLAPSE);
   if AutoHide
      and FAutoHiden
      and (FAutoShowMode = EAutoShowModeMouseHover)
@@ -3354,6 +4235,7 @@ end;
 
 procedure TLinkbarWcl.FormMouseLeave(Sender: TObject);
 begin
+  ArmAutoCollapse;
   HotIndex := -1;
   if ZoomEnabled and (FZoomCursor >= 0)
   then begin
@@ -3424,7 +4306,11 @@ begin
   if (index = ITEM_NONE)
   then part := -1
   else begin
-    part := Items[index].GetDropPart(AValue, IsVertical(Align), FDragingItem);
+    var bSideOnly: Boolean := FDragingItem;
+    if bSideOnly and (Items[index] is TItemGroup) then
+      bSideOnly := False;
+      
+    part := Items[index].GetDropPart(AValue, IsVertical(Align), bSideOnly);
 
     if (part = 1) and (index <> FDragIndex)
     then begin
@@ -3436,7 +4322,7 @@ begin
     then index := ITEM_NONE;
   end;
 
-  if FDragingItem or (index = ITEM_NONE) or (part <> 0)
+  if (index = ITEM_NONE) or (part <> 0)
   then FPidl := WorkDirPidl
   else FPidl := Items[index].Pidl;
 
@@ -3515,20 +4401,48 @@ begin
 
   if FDragingItem
   then begin
-    SortAlphabetically := False;
-    if (FItemDropPosition = ITEM_NONE)
+    // Dropped on the center of a group: move the item (shortcut, action...) inside the group folder.
+    // The shell does not do it: drops that start in the bar itself are not forwarded to the target.
+    if (_FPart = 0)
+       and IsItemIndex(FDragIndex)
+       and IsItemIndex(FItemDropPosition)
+       and (FItemDropPosition <> FDragIndex)
+       and (Items[FItemDropPosition] is TItemGroup)
+       and (not Items.IsSeparator(Items[FDragIndex]))
     then begin
-      if (Items.Count > 0)
-         and ((Items.First.Rect.TopLeft.X < pt.X) or (Items.First.Rect.TopLeft.Y < pt.Y))
-      then Items.Move(FDragIndex, 0)
-      else Items.Move(FDragIndex, Items.Count-1);
-    end
-    else begin
-      if (FItemDropPosition <= FDragIndex)
-      then Items.Move(FDragIndex, FItemDropPosition)
-      else Items.Move(FDragIndex, FItemDropPosition-1);
+      var srcFile := ExcludeTrailingPathDelimiter(Items[FDragIndex].FileName);
+      var dstFile := IncludeTrailingPathDelimiter(Items[FItemDropPosition].FileName) + ExtractFileName(srcFile);
+      if not (FileExists(dstFile) or DirectoryExists(dstFile))
+      then begin
+        if MoveFile(PChar(srcFile), PChar(dstFile))
+        then begin
+          // Reload the group icon (mini icons of its members), same as GroupChanged
+          Items[FItemDropPosition].NeedLoad := True;
+          tmrUpdate.Enabled := False;
+          tmrUpdate.Enabled := True;
+        end;
+      end;
     end;
+
+    if _FPart <> 0 then
+    begin
+      SortAlphabetically := False;
+      if (FItemDropPosition = ITEM_NONE)
+      then begin
+        if (Items.Count > 0)
+           and ((Items.First.Rect.TopLeft.X < pt.X) or (Items.First.Rect.TopLeft.Y < pt.Y))
+        then Items.Move(FDragIndex, 0)
+        else Items.Move(FDragIndex, Items.Count-1);
+      end
+      else begin
+        if (FItemDropPosition <= FDragIndex)
+        then Items.Move(FDragIndex, FItemDropPosition)
+        else Items.Move(FDragIndex, FItemDropPosition-1);
+      end;
+    end;
+    Items.PinnedToEnd;
     SetDropPosition( Point(-1, -1) );
+    SaveLinks;
     UpdateWindowSize;
   end
   else tmrUpdate.Enabled := True;
@@ -3672,12 +4586,15 @@ begin
 
   if FSortAlphabetically
   then Items.Sort;
+  Items.PinnedToEnd;
 
   _LastModifiedItemHash := 0;
   _RenamedOldItemHash := 0;
 
   SetDropPosition( Point(-1, -1) );
   oAppBar.AppBarPosChanged;
+  // Taskbar icon mode: the automatic icon shows the first icons of the bar
+  UpdateTaskbarIcon;
 end;
 
 procedure TLinkbarWcl.DirWatchError(const Sender: TObject;
@@ -3925,12 +4842,6 @@ begin
   else Result := 0;
 end;
 
-{ Icons stay on the screen edge and grow towards the screen center }
-function TLinkbarWcl.ZoomBefore: Boolean;
-begin
-  Result := (Align = EPanelAlignBottom) or (Align = EPanelAlignRight);
-end;
-
 function TLinkbarWcl.ZoomIconSizeValue: Integer;
 begin
   if ZoomEnabled
@@ -3957,7 +4868,7 @@ end;
 procedure TLinkbarWcl.DockBounds(var AX, AY, AWidth, AHeight: Integer);
 var
   wa: TRect;
-  len, gap, mon: Integer;
+  len, len_exp, gap, mon: Integer;
   vertical: Boolean;
 begin
   mon := EnsureRange(FMonitorNum, 0, Screen.MonitorCount - 1);
@@ -3965,20 +4876,33 @@ begin
   gap := ScaleDimension(6);
   vertical := IsVertical(Align);
 
-  len := Items.LineWidth + 2 * ItemsMargin + SysWidgetLength(vertical);
+  len_exp := Items.LineWidth + 2 * ItemsMargin + SysWidgetLength(vertical);
+  if IsCollapsed then
+    len := ItemsMargin + PinnedLength(vertical) + SysWidgetLength(vertical)
+  else
+    len := len_exp;
+
   if vertical
   then begin
+    len_exp := Min(len_exp, wa.Height);
     len := Min(len, wa.Height);
     AHeight := len;
-    AY := wa.Top + MulDiv(wa.Height - len, FDockPos, 1000);
+    AY := wa.Top + MulDiv(wa.Height - len_exp, FDockPos, 1000);
+    if IsCollapsed then
+      AY := AY + (len_exp - len);
+      
     if (Align = EPanelAlignLeft)
     then AX := wa.Left + gap
     else AX := wa.Right - AWidth - gap;
   end
   else begin
+    len_exp := Min(len_exp, wa.Width);
     len := Min(len, wa.Width);
     AWidth := len;
-    AX := wa.Left + MulDiv(wa.Width - len, FDockPos, 1000);
+    AX := wa.Left + MulDiv(wa.Width - len_exp, FDockPos, 1000);
+    if IsCollapsed then
+      AX := AX + (len_exp - len);
+      
     if (Align = EPanelAlignTop)
     then AY := wa.Top + gap
     else AY := wa.Bottom - AHeight - gap;
@@ -4117,18 +5041,27 @@ end;
 procedure TLinkbarWcl.SaveDockPos;
 var
   wa: TRect;
-  range, pos: Integer;
+  range, pos, len_exp: Integer;
+  vertical: Boolean;
 begin
+  vertical := IsVertical(Align);
+  len_exp := Items.LineWidth + 2 * ItemsMargin + SysWidgetLength(vertical);
   wa := Screen.Monitors[EnsureRange(FMonitorNum, 0, Screen.MonitorCount - 1)].WorkareaRect;
-  if IsVertical(Align)
+  
+  if vertical
   then begin
-    range := wa.Height - Height;
+    len_exp := Min(len_exp, wa.Height);
+    range := wa.Height - len_exp;
     pos := Top - wa.Top;
+    if IsCollapsed then pos := pos - (len_exp - Height);
   end
   else begin
-    range := wa.Width - Width;
+    len_exp := Min(len_exp, wa.Width);
+    range := wa.Width - len_exp;
     pos := Left - wa.Left;
+    if IsCollapsed then pos := pos - (len_exp - Width);
   end;
+  
   if (range > 0)
   then FDockPos := EnsureRange(MulDiv(pos, 1000, range), 0, 1000)
   else FDockPos := DEF_DOCK_POS;
@@ -4137,21 +5070,177 @@ end;
 
 procedure TLinkbarWcl.SetBarStyle(AValue: Integer);
 begin
-  AValue := EnsureRange(AValue, BAR_STYLE_NORMAL, BAR_STYLE_DOCK);
+  AValue := EnsureRange(AValue, BAR_STYLE_NORMAL, BAR_STYLE_TASKBAR);
   if (AValue = FBarStyle)
   then Exit;
   FBarStyle := AValue;
+  FinishCollapseAnim;
 
-  if IsDock and AutoHide
+  if (IsDock or IsTaskbarIcon) and AutoHide
   then AutoHide := False;
 
   ApplyWindowAccent;
   if Assigned(oAppBar)
   then begin
-    oAppBar.Floating := IsDock;
-    oAppBar.AppBarPosChanged;
+    oAppBar.Floating := IsDock or IsTaskbarIcon;
+    if not IsTaskbarIcon
+    then oAppBar.AppBarPosChanged;
   end;
   SetWindowRgn(Handle, 0, True);
+  ApplyTaskbarMode;
+end;
+
+{ ---------- "taskbar icon" mode ---------- }
+
+function TLinkbarWcl.IsTaskbarIcon: Boolean;
+begin
+  Result := (FBarStyle = BAR_STYLE_TASKBAR);
+end;
+
+{ Show the bar or only its taskbar button, depending on the style }
+procedure TLinkbarWcl.ApplyTaskbarMode;
+begin
+  if IsTaskbarIcon
+  then begin
+    if not Assigned(FTaskbarButton)
+    then begin
+      var btn := TTaskbarButton.CreateButton(Self, PanelName);
+      btn.OnClick := TaskbarButtonClick;
+      btn.OnCloseRequest := TaskbarButtonClose;
+      // Each bar is its own taskbar app: not grouped with the other bars
+      btn.SetAppId('Arlarach.Linkbar.' + IntToHex(StrToHash(AnsiLowerCase(FSettingsFileName)), 8));
+      FTaskbarButton := btn;
+    end;
+    UpdateTaskbarIcon;
+    CloseThumbs;
+    ToolTip.Cancel;
+    ShowWindow(Handle, SW_HIDE);
+    TTaskbarButton(FTaskbarButton).ShowButton;
+  end
+  else begin
+    if Assigned(FTaskbarButton)
+    then begin
+      TTaskbarButton(FTaskbarButton).HideButton;
+      FreeAndNil(FTaskbarButton);
+    end;
+    if not IsWindowVisible(Handle) and not FHiddenByFullscreen
+    then begin
+      ShowWindow(Handle, SW_SHOWNA);
+      oAppBar.AppBarPosChanged;
+    end;
+  end;
+end;
+
+{ Click on the taskbar button: the bar's content as a popup above the taskbar }
+procedure TLinkbarWcl.TaskbarButtonClick(Sender: TObject);
+var r: TRect;
+    edge: UINT;
+    al: TPanelAlign;
+begin
+  // The popup closes when the button is pressed: that click only closes it
+  if FLauncherOpen or (GetTickCount - FLauncherClosedAt < 400)
+  then Exit;
+
+  GetTaskbarAnchor(r, edge);
+  case edge of
+    ABE_TOP:   al := EPanelAlignTop;
+    ABE_LEFT:  al := EPanelAlignLeft;
+    ABE_RIGHT: al := EPanelAlignRight;
+    else       al := EPanelAlignBottom;
+  end;
+
+  var form := TFormGroup.CreateGroup(Self, Handle, ExcludeTrailingPathDelimiter(WorkDir),
+    PanelName, EnsureRange(IconSize, 32, 64));
+  form.RootLocked := True;
+  // Action buttons of the popup send their keys to the window that was in front
+  var target := GetForegroundWindow;
+  if IsOurWindow(target) or IsShellUiWindow(target)
+  then target := FLastForeignWnd;
+  if IsOurWindow(target) then target := 0;
+  form.ActionTarget := target;
+  form.OnRootMenu := LauncherRootMenu;
+  form.OnDestroy := LauncherPopupDestroy;
+  form.OnGroupChanged := LauncherChanged;
+  // The bar is hidden: its CPU/RAM widgets go to the popup
+  if FShowSysWidgets
+  then form.EnableSysStats(LauncherSysStats);
+  FLauncherOpen := True;
+  form.PopupAt(r, al);
+  // The popup closes when it loses the focus, so it must get it
+  if (GetForegroundWindow <> form.Handle)
+  then SetForegroundWindowInternal(form.Handle);
+end;
+
+procedure TLinkbarWcl.LauncherPopupDestroy(Sender: TObject);
+begin
+  FLauncherOpen := False;
+  FLauncherClosedAt := GetTickCount;
+end;
+
+procedure TLinkbarWcl.TaskbarButtonClose(Sender: TObject);
+begin
+  imCloseClick(Sender);
+end;
+
+{ Extra items in the popup menu: settings and back to a normal bar }
+procedure TLinkbarWcl.LauncherRootMenu(AMenu: TPopupMenu);
+var mi: TMenuItem;
+begin
+  mi := TMenuItem.Create(AMenu);
+  mi.Caption := L10NFind('Menu.ShowAsBar', 'Show as a bar');
+  mi.OnClick := LauncherShowAsBar;
+  AMenu.Items.Add(mi);
+  mi := TMenuItem.Create(AMenu);
+  mi.Caption := imProperties.Caption;
+  mi.OnClick := imPropertiesClick;
+  AMenu.Items.Add(mi);
+end;
+
+{ Something changed in the popup (color, sub-groups): refresh the button icon }
+procedure TLinkbarWcl.LauncherChanged(Sender: TObject);
+begin
+  UpdateTaskbarIcon;
+end;
+
+{ Icon of the taskbar button: the chosen one, or a 2x2 preview of the bar's
+  icons on a tile of the bar's color (so every bar looks different) }
+procedure TLinkbarWcl.UpdateTaskbarIcon;
+var
+  big, small: HICON;
+  bmp: HBITMAP;
+begin
+  if not Assigned(FTaskbarButton) then Exit;
+  if not IconsFromSpec(FTaskbarIcon, big, small)
+  then begin
+    bmp := CreateGroupIcon(ExcludeTrailingPathDelimiter(WorkDir), GetSystemMetrics(SM_CXICON));
+    big := IconFromPremultipliedBitmap(bmp);
+    DeleteObject(bmp);
+    bmp := CreateGroupIcon(ExcludeTrailingPathDelimiter(WorkDir), GetSystemMetrics(SM_CXSMICON));
+    small := IconFromPremultipliedBitmap(bmp);
+    DeleteObject(bmp);
+  end;
+  if (big = 0) and (small = 0) then Exit; // keep the current one
+  TTaskbarButton(FTaskbarButton).SetIcons(big, small);
+end;
+
+procedure TLinkbarWcl.SetTaskbarIcon(const AValue: string);
+begin
+  if (Trim(AValue) = FTaskbarIcon) then Exit;
+  FTaskbarIcon := Trim(AValue);
+  UpdateTaskbarIcon;
+end;
+
+procedure TLinkbarWcl.LauncherSysStats(out ACpu, ARam: Integer);
+begin
+  // the widgets timer keeps sampling while the bar is hidden
+  ACpu := FCpuLoad;
+  ARam := FRamLoad;
+end;
+
+procedure TLinkbarWcl.LauncherShowAsBar(Sender: TObject);
+begin
+  BarStyle := BAR_STYLE_NORMAL;
+  SaveSettings;
 end;
 
 procedure TLinkbarWcl.SetZoomPercent(AValue: Integer);
@@ -4190,6 +5279,8 @@ var
   base, vr: TRect;
   item: TItemBase;
   baseStart, baseLen: Double;
+  gap, sepIdx: Integer;
+  sr: TRect;
 begin
   vertical := IsVertical(Align);
   z := FZoomPercent / 100;
@@ -4225,8 +5316,20 @@ begin
 
   // positions: keep the point under the mouse fixed
   if vertical then vis := Items[0].Rect.Top else vis := Items[0].Rect.Left;
+  // gap before the pinned items (see TLBItemList.PinnedSepRect)
+  gap := 0;
+  sepIdx := -1;
+  if not Items.PinnedSepRect.IsEmpty
+  then begin
+    if vertical then gap := Items.PinnedSepRect.Height else gap := Items.PinnedSepRect.Width;
+  end;
   for i := 0 to n-1 do
   begin
+    if (gap > 0) and (i > 0) and Items[i].Pinned and not Items[i-1].Pinned
+    then begin
+      sepIdx := i;
+      vis := vis + gap;
+    end;
     starts[i] := vis;
     vis := vis + lens[i];
   end;
@@ -4268,6 +5371,15 @@ begin
   end;
 
   // draw
+  if (sepIdx >= 0) and (FSeparatorStyle <> ESeparatorStyleSpace)
+  then begin
+    sr := Items.PinnedSepRect;
+    if vertical
+    then sr := Rect(sr.Left, Round(starts[sepIdx] - gap + shift), sr.Right, Round(starts[sepIdx] + shift))
+    else sr := Rect(Round(starts[sepIdx] - gap + shift), sr.Top, Round(starts[sepIdx] + shift), sr.Bottom);
+    ThemeDrawSeparator(BitmapPanel, Align, sr);
+  end;
+
   for i := 0 to n-1 do
   begin
     item := Items[i];
@@ -4287,19 +5399,16 @@ begin
     if vertical
     then begin
       y := vr.Top + (vr.Height - size) div 2;
-      if ZoomBefore
-      then x := base.Left + FIconOffset.X + IconSize - size   // right bar: grow to the left
-      else x := base.Left + FIconOffset.X;                    // left bar: grow to the right
+      x := base.Left + FIconOffset.X + (IconSize - size) div 2;   // grows to both sides
     end
     else begin
       x := vr.Left + (vr.Width - size) div 2;
-      if ZoomBefore
-      then y := base.Top + FIconOffset.Y + IconSize - size    // bottom bar: grow upwards
-      else y := base.Top + FIconOffset.Y;                     // top bar: grow downwards
+      y := base.Top + FIconOffset.Y + (IconSize - size) div 2;    // grows to both sides
     end;
 
     Items.DrawScaled(BitmapPanel.Dc, item, x, y, size);
     DrawRunningMark(BitmapPanel, item, vr);
+    DrawPinnedMark(BitmapPanel, item, vr);
   end;
 end;
 
@@ -4321,13 +5430,18 @@ begin
   if (AValue = FShowSysWidgets)
   then Exit;
   FShowSysWidgets := AValue;
+  FinishCollapseAnim;
 
   if FShowSysWidgets
   then begin
     SampleSysStats;
     SetTimer(Handle, TIMER_SYS_WIDGETS, 1000, nil);
   end
-  else KillTimer(Handle, TIMER_SYS_WIDGETS);
+  else begin
+    KillTimer(Handle, TIMER_SYS_WIDGETS);
+    // No ">>" button any more: the bar cannot stay collapsed
+    FMacCollapsed := False;
+  end;
 
   // Re-layout: the end of the bar is reserved for the widgets
   if Assigned(oAppBar)
@@ -4341,8 +5455,8 @@ begin
   if not FShowSysWidgets
   then Exit(0);
   if AVertical
-  then Result := SYSWIDGET_COUNT * Max(ButtonSize.cy, ScaleDimension(40)) + ScaleDimension(8)
-  else Result := SYSWIDGET_COUNT * Max(ButtonSize.cx, ScaleDimension(56)) + ScaleDimension(8);
+  then Result := SYSWIDGET_COUNT * Max(ButtonSize.cy, ScaleDimension(40)) + ScaleDimension(8) + ScaleDimension(24)
+  else Result := SYSWIDGET_COUNT * Max(ButtonSize.cx, ScaleDimension(56)) + ScaleDimension(8) + ScaleDimension(24);
 end;
 
 function TLinkbarWcl.SysWidgetRect(const AWidth, AHeight: Integer): TRect;
@@ -4411,9 +5525,17 @@ begin
   then Exit;
 
   vertical := IsVertical(Align);
+  if vertical then begin
+    FBtnCollapseRect := Rect(area.Left, area.Top, area.Right, area.Top + ScaleDimension(24));
+    area.Top := FBtnCollapseRect.Bottom;
+  end else begin
+    FBtnCollapseRect := Rect(area.Left, area.Top, area.Left + ScaleDimension(24), area.Bottom);
+    area.Left := FBtnCollapseRect.Right;
+  end;
+
   pad := ScaleDimension(4);
   barW := Max(3, ScaleDimension(5));
-  if ZoomBefore then zoff := ZoomRoom else zoff := 0;
+  zoff := ZoomRoom div 2;  // items are centered in the extra zoom thickness
   if vertical
   then cellLen := (area.Height - pad * 2) div SYSWIDGET_COUNT
   else cellLen := (area.Width - pad * 2) div SYSWIDGET_COUNT;
@@ -4426,7 +5548,7 @@ begin
   // (the custom item text color may be dark, e.g. black, and disappear on a dark bar)
   if (GlobalLook = ELookLight)
   then textColor := clBlack
-  else textColor := clWhite;
+  else textColor := RGB(165, 180, 192); // gris azulado suave (menos brillo que blanco)
 
   dc := ABitmap.Dc;
 
@@ -4461,6 +5583,61 @@ begin
         GPFillRoundRect(gp, brushFill, fill, barW div 2);
       end;
     end;
+
+    if (not FBtnCollapseRect.IsEmpty) and FBtnCollapseHot then
+    begin
+      tr := FBtnCollapseRect;
+      InflateRect(tr, -2, -2);
+      brushFill := TGPSolidBrush.Create($22FFFFFF);
+      GPFillRoundRect(gp, brushFill, tr, 4);
+    end;
+
+    // ">>" / "<<" icon: two chevrons drawn with GDI+ (visible but muted)
+    if not FBtnCollapseRect.IsEmpty then
+    begin
+      var chevColor: Cardinal;
+      if (GlobalLook = ELookLight)
+      then begin
+        if FBtnCollapseHot then chevColor := $FF222222 else chevColor := $FF666666;
+      end
+      else begin
+        if FBtnCollapseHot then chevColor := $FFD2DEE9 else chevColor := $FF8696A6;
+      end;
+
+      const chevW = Single(Max(3, ScaleDimension(4)));    // chevron width
+      const chevH = Single(Max(4, ScaleDimension(5)));    // half height
+      const chevGap = Single(Max(3, ScaleDimension(4)));  // space between the two chevrons
+      const totalW = chevW * 2 + chevGap;
+      var chevCx, chevCy: Single;
+      if vertical
+      then begin
+        chevCx := FBtnCollapseRect.Left + zoff + ButtonSize.cx / 2;
+        chevCy := (FBtnCollapseRect.Top + FBtnCollapseRect.Bottom) / 2;
+      end
+      else begin
+        chevCx := (FBtnCollapseRect.Left + FBtnCollapseRect.Right) / 2;
+        chevCy := FBtnCollapseRect.Top + zoff + ButtonSize.cy / 2;
+      end;
+
+      gp.SmoothingMode := SmoothingModeAntiAlias;
+      var chevPen: IGPPen := TGPPen.Create(chevColor, Max(1.8, ScaleDimension(2) * 1.0));
+      chevPen.StartCap := LineCapRound;
+      chevPen.EndCap := LineCapRound;
+      chevPen.LineJoin := LineJoinRound;
+
+      for var k := 0 to 1
+      do begin
+        var x0: Single := chevCx - totalW / 2 + k * (chevW + chevGap);
+        if IsCollapsed
+        then gp.DrawLines(chevPen, [TGPPointF.Create(x0 + chevW, chevCy - chevH),
+                                    TGPPointF.Create(x0, chevCy),
+                                    TGPPointF.Create(x0 + chevW, chevCy + chevH)])
+        else gp.DrawLines(chevPen, [TGPPointF.Create(x0, chevCy - chevH),
+                                    TGPPointF.Create(x0 + chevW, chevCy),
+                                    TGPPointF.Create(x0, chevCy + chevH)]);
+      end;
+    end;
+
   finally
     brushFill := nil;
     brushTrack := nil;
@@ -4492,6 +5669,7 @@ begin
       s := IntToStr(value) + '%';
       DrawGlassText(dc, s, tr, DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX, 0, textColor);
     end;
+
   finally
     SelectObject(dc, fnt0);
   end;

@@ -143,6 +143,8 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="Linkbar.GroupForm.pas"/>
         <DCCReference Include="Linkbar.ThumbForm.pas"/>
         <DCCReference Include="Linkbar.Actions.pas"/>
+        <DCCReference Include="Linkbar.TaskbarButton.pas"/>
+        <DCCReference Include="Linkbar.IconPicker.pas"/>
         <None Include="linkbar.inc"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

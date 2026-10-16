@@ -1112,7 +1112,8 @@ object FrmProperties: TFrmProperties
           OnChange = Changed
           Items.Strings = (
             'Normal (screen edge)'
-            'Dock (Mac)')
+            'Dock (Mac)'
+            'Taskbar icon')
         end
       end
       object pnlZoom: TPanel

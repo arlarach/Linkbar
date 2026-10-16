@@ -34,7 +34,9 @@ uses
   Linkbar.Settings in 'Linkbar.Settings.pas',
   Linkbar.GroupForm in 'Linkbar.GroupForm.pas',
   Linkbar.ThumbForm in 'Linkbar.ThumbForm.pas',
-  Linkbar.Actions in 'Linkbar.Actions.pas';
+  Linkbar.Actions in 'Linkbar.Actions.pas',
+  Linkbar.TaskbarButton in 'Linkbar.TaskbarButton.pas',
+  Linkbar.IconPicker in 'Linkbar.IconPicker.pas';
 
 {$R *.res}
 

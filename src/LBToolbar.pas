@@ -36,6 +36,7 @@ type
     NeedLoad: Boolean;
     TargetPath: string;   // .exe the shortcut points to (lower case), '' if none
     Running: Boolean;     // a window of TargetPath is open
+    Pinned: Boolean;      // stays visible when the bar is collapsed (">>")
   public
     property Kind: TKind read FKind;
     property Bitmap: HBITMAP read FBitmap;
@@ -71,7 +72,7 @@ type
   public
     MemberTargets: TArray<string>; // .exe targets of the members (for "program is open")
     class function IsGroupFile(const AFileName: string): Boolean; static;
-    class function GetMemberFiles(const AFolder: string): TArray<string>; static;
+    class function GetMemberFiles(const AFolder: string; const AIncludeActions: Boolean = False): TArray<string>; static;
     function LoadFromFile(const AFileName: string): Boolean; override;
     procedure LoadIcon(const AIconSize: Integer); override;
     procedure LoadZoomIcon(const AIconSize: Integer); override;
@@ -95,7 +96,8 @@ type
     Margin: Integer;
     Reserved: Integer; // space kept free at the end of the bar (CPU/RAM widgets)
     ZoomRoom: Integer;    // extra thickness for the magnification effect
-    ZoomBefore: Boolean;  // the extra thickness is before the items (bottom/right bars)
+    ZoomOffset: Integer;  // distance of the items from the bar edge (half of ZoomRoom: centered at rest)
+    OnlyPinned: Boolean;  // collapsed bar: only pinned items get a position
   end;
 
   TLBItemList = class(TObjectList<TItemBase>)
@@ -107,6 +109,8 @@ type
     FIconSize: Integer;
     FZoomIconSize: Integer;
     FLineWidth: Integer;
+    FPinnedWidth: Integer;
+    FPinnedSepRect: TRect;
     procedure SetIconSize(const AValue: Integer);
     procedure SetZoomIconSize(const AValue: Integer);
     procedure QuickSort(L, R: Integer);
@@ -121,12 +125,15 @@ type
     procedure LoadIcon(const AItem: TItemBase); inline;
     procedure BitBucketUpdateIcon;
     procedure Sort;
+    procedure PinnedToEnd;
     procedure UpdateLines(const AVertical: Boolean; const AWidth, AHeight: Integer);
     function GetLineIndex(const AItemIndex: Integer): Integer;
   public
     property IconSize: Integer read FIconSize write SetIconSize;
     property ZoomIconSize: Integer read FZoomIconSize write SetZoomIconSize; // 0 = no zoom icons
     property LineWidth: Integer read FLineWidth;
+    property PinnedWidth: Integer read FPinnedWidth; // length taken by the pinned items (without margins)
+    property PinnedSepRect: TRect read FPinnedSepRect; // gap before the pinned items (empty = none)
   public
     class function IsSeparator(const AItem: TItemBase): Boolean; inline;
   end;
@@ -145,6 +152,8 @@ type
 
   { Group background color, stored as "#RRGGBB" in "<group>\color" }
   function ReadGroupColor(const AFolder: string; out AColor: TColor): Boolean;
+  { Group icon: rounded tile (group color) with up to 4 mini icons (2x2) }
+  function CreateGroupIcon(const AFolder: string; const AIconSize: Integer): HBITMAP;
   { clNone = back to the default color }
   procedure WriteGroupColor(const AFolder: string; const AColor: TColor);
 
@@ -510,7 +519,7 @@ end;
 
 { Members of a group: custom order from "<group>\list" (if the user reordered),
   then the remaining files in alphabetical order }
-class function TItemGroup.GetMemberFiles(const AFolder: string): TArray<string>;
+class function TItemGroup.GetMemberFiles(const AFolder: string; const AIncludeActions: Boolean): TArray<string>;
 var
   sr: TSearchRec;
   found, order, res: TStringList;
@@ -533,6 +542,15 @@ begin
         until (FindNext(sr) <> 0);
         FindClose(sr);
       end;
+    end;
+    // Action buttons (only the bar's own folder, shown in the taskbar icon popup)
+    if AIncludeActions and (FindFirst(dir + '*' + ES_ACTION, faAnyFile, sr) = 0)
+    then begin
+      repeat
+        if ((sr.Attr and faDirectory) = 0)
+        then found.Add(sr.Name);
+      until (FindNext(sr) <> 0);
+      FindClose(sr);
     end;
     // Sub-groups (folders "<name>.group")
     if (FindFirst(dir + '*' + ES_GROUP, faDirectory, sr) = 0)
@@ -657,6 +675,7 @@ var
   gc: TColor;
   cr, cg, cb: Cardinal;
   files: TArray<string>;
+  actData: TActionData;
   dc, srcDc: HDC;
   old, oldSrc: HGDIOBJ;
   pidl: PItemIDList;
@@ -728,7 +747,7 @@ begin
     end;
 
   // Mini icons
-  files := TItemGroup.GetMemberFiles(AFolder);
+  files := TItemGroup.GetMemberFiles(AFolder, True);
   n := Length(files);
   if (n > 4) then n := 4;
   if (n = 0)
@@ -751,25 +770,35 @@ begin
   try
     for i := 0 to n-1 do
     begin
-      pidl := nil;
-      if (SHParseDisplayName(PChar(files[i]), nil, pidl, 0, PDWORD(nil)^) = S_OK)
-      then try
-        ico := LoadIconFromPidl(pidl, cell);
-        if (ico <> 0)
+      ico := 0;
+      if IsActionFile(files[i])
+      then begin
+        // Action buttons have their own icon (not a shell icon)
+        if LoadActionFile(files[i], actData)
+        then ico := CreateActionIcon(actData, cell);
+      end
+      else begin
+        pidl := nil;
+        if (SHParseDisplayName(PChar(files[i]), nil, pidl, 0, PDWORD(nil)^) = S_OK)
         then try
-          if (GetObject(ico, SizeOf(bm), @bm) <> 0)
-          then begin
-            x := pad + (i mod 2) * (cell + pad);
-            y := pad + (i div 2) * (cell + pad);
-            oldSrc := SelectObject(srcDc, ico);
-            Winapi.Windows.AlphaBlend(dc, x, y, cell, cell, srcDc, 0, 0, bm.bmWidth, Abs(bm.bmHeight), bf);
-            SelectObject(srcDc, oldSrc);
-          end;
+          ico := LoadIconFromPidl(pidl, cell);
         finally
-          DeleteObject(ico);
+          CoTaskMemFree(pidl);
+        end;
+      end;
+
+      if (ico <> 0)
+      then try
+        if (GetObject(ico, SizeOf(bm), @bm) <> 0)
+        then begin
+          x := pad + (i mod 2) * (cell + pad);
+          y := pad + (i div 2) * (cell + pad);
+          oldSrc := SelectObject(srcDc, ico);
+          Winapi.Windows.AlphaBlend(dc, x, y, cell, cell, srcDc, 0, 0, bm.bmWidth, Abs(bm.bmHeight), bf);
+          SelectObject(srcDc, oldSrc);
         end;
       finally
-        CoTaskMemFree(pidl);
+        DeleteObject(ico);
       end;
     end;
   finally
@@ -1037,6 +1066,22 @@ begin
   inherited;
 end;
 
+{ Pinned items go to the end of the bar (keeping their relative order) }
+procedure TLBItemList.PinnedToEnd;
+var
+  i, n: Integer;
+begin
+  i := 0;
+  n := Count;
+  while (n > 0)
+  do begin
+    if Items[i].Pinned
+    then Move(i, Count - 1)
+    else Inc(i);
+    Dec(n);
+  end;
+end;
+
 procedure TLBItemList.UpdateLines(const AVertical: Boolean; const AWidth, AHeight: Integer);
 var
   count, x, y, margin: Integer;
@@ -1047,11 +1092,18 @@ begin
   // Area available for items (end of the bar may be reserved for widgets)
   availW := AWidth;
   availH := AHeight;
-  if AVertical
+  if Sizes.OnlyPinned
+  then begin
+    // Collapsed: measure everything as a single line (no wrapping)
+    availW := MaxInt div 2;
+    availH := MaxInt div 2;
+  end
+  else if AVertical
   then availH := AHeight - Sizes.Reserved
   else availW := AWidth - Sizes.Reserved;
 
   // Set item width and height
+  FPinnedWidth := 0;
   for var item in Self
   do begin
     item.Rect := TRect.Empty;
@@ -1062,28 +1114,52 @@ begin
       else item.Rect.BottomRight := TPoint.Create(Sizes.Separator, Sizes.Button.cy);
     end
     else item.Rect.BottomRight := TPoint.Create(Sizes.Button.cx, Sizes.Button.cy);
+
+    if item.Pinned
+    then Inc(FPinnedWidth, IfThen(AVertical, item.Rect.Height, item.Rect.Width));
   end;
 
   margin := Sizes.Margin;
 
   if (AVertical)
   then begin
-    x := 0;
-    if Sizes.ZoomBefore then x := Sizes.ZoomRoom;
+    x := Sizes.ZoomOffset;
     y := margin;
   end else
   begin
     x := margin;
-    y := 0;
-    if Sizes.ZoomBefore then y := Sizes.ZoomRoom;
+    y := Sizes.ZoomOffset;
   end;
 
   count := 0;
   Lines.Clear;
+  FPinnedSepRect := TRect.Empty;
 
   for var i := 0 to Self.Count-1
   do begin
     Inc(count);
+
+    // Gap (separator) between the normal items and the pinned ones at the end
+    if (Sizes.Separator > 0)
+       and (i > 0)
+       and Self[i].Pinned
+       and (not Self[i-1].Pinned)
+       and (FPinnedSepRect.IsEmpty)
+    then begin
+      if (AVertical)
+      then begin
+        if (y > margin)
+        then begin
+          FPinnedSepRect := Bounds(x, y, Sizes.Button.cx, Sizes.Separator);
+          Inc(y, Sizes.Separator);
+        end;
+      end
+      else if (x > margin)
+      then begin
+        FPinnedSepRect := Bounds(x, y, Sizes.Separator, Sizes.Button.cy);
+        Inc(x, Sizes.Separator);
+      end;
+    end;
 
     r := Self[i].Rect;
 
@@ -1136,6 +1212,35 @@ begin
     else FLineWidth := Self[Lines[0]-1].Rect.Right - Self[0].Rect.Left;
   end;
 
+  // Collapsed bar: only the pinned items stay, packed at the start of one line.
+  // LineWidth keeps the full (expanded) length.
+  if Sizes.OnlyPinned
+  then begin
+    FPinnedSepRect := TRect.Empty;
+    var pos := margin;
+    for var item in Self
+    do begin
+      var w := item.Rect.Width;
+      var h := item.Rect.Height;
+      if item.Pinned
+      then begin
+        if AVertical
+        then begin
+          item.Rect := Bounds(Sizes.ZoomOffset, pos, w, h);
+          Inc(pos, h);
+        end
+        else begin
+          item.Rect := Bounds(pos, Sizes.ZoomOffset, w, h);
+          Inc(pos, w);
+        end;
+      end
+      else item.Rect := TRect.Empty;
+    end;
+    Lines.Clear;
+    Lines.Add(Self.Count);
+    Exit;
+  end;
+
   // Align items
   if (GlobalLayout = EPanelLayoutCenter)
      and (Lines.Count = 1)
@@ -1147,6 +1252,7 @@ begin
 
     for var item in Self
     do item.Rect.Offset(offset);
+    FPinnedSepRect.Offset(offset);
   end
 end;
 

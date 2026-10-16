@@ -174,6 +174,18 @@ type
     pnlSizePresets: TPanel;
     pnlHideFullscreen: TPanel;
     chbHideFullscreen: TCheckBox;
+    pnlCollapseFullscreen: TPanel;
+    chbCollapseFullscreen: TCheckBox;
+    pnlAnimateCollapse: TPanel;
+    chbAnimateCollapse: TCheckBox;
+    pnlAutoCollapse: TPanel;
+    chbAutoCollapse: TCheckBox;
+    pnlTaskbarIcon: TPanel;
+    lblTaskbarIconValue: TLabel;
+    FTaskbarIconValue: string;
+    procedure TaskbarIconChangeClick(Sender: TObject);
+    procedure TaskbarIconAutoClick(Sender: TObject);
+    procedure ShowTaskbarIconValue;
     procedure CreateExtraControls;
     procedure SizePresetClick(Sender: TObject);
     procedure SetBackgroundColor(AValue: Cardinal);
@@ -203,7 +215,8 @@ implementation
 
 uses
   Math, Graphics, Vcl.Clipbrd, Vcl.Themes, System.Win.Registry, System.StrUtils,
-  Linkbar.Consts, Linkbar.OS, Linkbar.Shell, Linkbar.Theme, Linkbar.L10n, Linkbar.Common;
+  Linkbar.Consts, Linkbar.OS, Linkbar.Shell, Linkbar.Theme, Linkbar.L10n, Linkbar.Common,
+  Linkbar.IconPicker;
 
 const
   AUTOSTART_KEY   = 'Software\Microsoft\Windows\CurrentVersion\Run';
@@ -303,6 +316,121 @@ begin
   chbHideFullscreen.Anchors := [akLeft, akTop, akRight];
   chbHideFullscreen.Caption := L10NFind('Properties.HideFullscreen', 'Hide when an app is full screen (games, videos)');
   chbHideFullscreen.OnClick := Changed;
+
+  // Additional page: collapse (">>") instead of hiding when an app is full screen
+  pnlCollapseFullscreen := TPanel.Create(Self);
+  pnlCollapseFullscreen.Parent := tsAdditionally;
+  pnlCollapseFullscreen.BevelOuter := bvNone;
+  pnlCollapseFullscreen.ShowCaption := False;
+  pnlCollapseFullscreen.ParentBackground := True;
+  pnlCollapseFullscreen.SetBounds(pnlAutoStart.Left, pnlAutoStart.Top, pnlAutoStart.Width, pnlAutoStart.Height);
+  pnlCollapseFullscreen.Anchors := [akLeft, akTop, akRight];
+
+  chbCollapseFullscreen := TCheckBox.Create(Self);
+  chbCollapseFullscreen.Parent := pnlCollapseFullscreen;
+  chbCollapseFullscreen.SetBounds(chbAutoStart.Left, chbAutoStart.Top, chbAutoStart.Width, chbAutoStart.Height);
+  chbCollapseFullscreen.Anchors := [akLeft, akTop, akRight];
+  chbCollapseFullscreen.Caption := L10NFind('Properties.CollapseFullscreen', 'Collapse the bar instead of hiding it when an app is full screen');
+  chbCollapseFullscreen.OnClick := Changed;
+
+  // Additional page: animate collapse / expand (dock mode)
+  pnlAnimateCollapse := TPanel.Create(Self);
+  pnlAnimateCollapse.Parent := tsAdditionally;
+  pnlAnimateCollapse.BevelOuter := bvNone;
+  pnlAnimateCollapse.ShowCaption := False;
+  pnlAnimateCollapse.ParentBackground := True;
+  pnlAnimateCollapse.SetBounds(pnlAutoStart.Left, pnlAutoStart.Top, pnlAutoStart.Width, pnlAutoStart.Height);
+  pnlAnimateCollapse.Anchors := [akLeft, akTop, akRight];
+
+  chbAnimateCollapse := TCheckBox.Create(Self);
+  chbAnimateCollapse.Parent := pnlAnimateCollapse;
+  chbAnimateCollapse.SetBounds(chbAutoStart.Left, chbAutoStart.Top, chbAutoStart.Width, chbAutoStart.Height);
+  chbAnimateCollapse.Anchors := [akLeft, akTop, akRight];
+  chbAnimateCollapse.Caption := L10NFind('Properties.AnimateCollapse', 'Animate collapsing and expanding the bar (dock style)');
+  chbAnimateCollapse.OnClick := Changed;
+
+  // Additional page: collapse after some time without using the bar
+  pnlAutoCollapse := TPanel.Create(Self);
+  pnlAutoCollapse.Parent := tsAdditionally;
+  pnlAutoCollapse.BevelOuter := bvNone;
+  pnlAutoCollapse.ShowCaption := False;
+  pnlAutoCollapse.ParentBackground := True;
+  pnlAutoCollapse.SetBounds(pnlAutoStart.Left, pnlAutoStart.Top, pnlAutoStart.Width, pnlAutoStart.Height);
+  pnlAutoCollapse.Anchors := [akLeft, akTop, akRight];
+
+  chbAutoCollapse := TCheckBox.Create(Self);
+  chbAutoCollapse.Parent := pnlAutoCollapse;
+  chbAutoCollapse.SetBounds(chbAutoStart.Left, chbAutoStart.Top, chbAutoStart.Width, chbAutoStart.Height);
+  chbAutoCollapse.Anchors := [akLeft, akTop, akRight];
+  chbAutoCollapse.Caption := Format(L10NFind('Properties.AutoCollapse', 'Collapse the bar after %d s without using it'), [AUTOCOLLAPSE_DEFAULT_SECS]);
+  chbAutoCollapse.OnClick := Changed;
+
+  // Additional page: icon of the taskbar button ("taskbar icon" style)
+  pnlTaskbarIcon := TPanel.Create(Self);
+  pnlTaskbarIcon.Parent := tsAdditionally;
+  pnlTaskbarIcon.BevelOuter := bvNone;
+  pnlTaskbarIcon.ShowCaption := False;
+  pnlTaskbarIcon.ParentBackground := True;
+  pnlTaskbarIcon.SetBounds(pnlAutoStart.Left, pnlAutoStart.Top, pnlAutoStart.Width, pnlAutoStart.Height);
+  pnlTaskbarIcon.Anchors := [akLeft, akTop, akRight];
+
+  lbl := TLabel.Create(Self);
+  lbl.Parent := pnlTaskbarIcon;
+  lbl.Align := alLeft;
+  lbl.Layout := tlCenter;
+  lbl.Caption := L10NFind('Properties.TaskbarIcon', 'Taskbar icon:') + ' ';
+
+  lblTaskbarIconValue := TLabel.Create(Self);
+  lblTaskbarIconValue.Parent := pnlTaskbarIcon;
+  lblTaskbarIconValue.Left := lbl.Width + 1;
+  lblTaskbarIconValue.Align := alLeft;
+  lblTaskbarIconValue.Layout := tlCenter;
+  lblTaskbarIconValue.EllipsisPosition := epEndEllipsis;
+
+  for i := 0 to 1 do
+  begin
+    btn := TButton.Create(Self);
+    btn.Parent := pnlTaskbarIcon;
+    if (i = 0)
+    then begin
+      btn.Caption := L10NFind('Properties.TaskbarIconChange', 'Change...');
+      btn.OnClick := TaskbarIconChangeClick;
+    end
+    else begin
+      btn.Caption := L10NFind('Properties.TaskbarIconAuto', 'Automatic');
+      btn.OnClick := TaskbarIconAutoClick;
+    end;
+    btn.Width := ScaleDimension(76);
+    btn.Left := pnlTaskbarIcon.Width + i * ScaleDimension(80);
+    btn.Align := alRight;
+    btn.AlignWithMargins := True;
+    btn.Margins.SetBounds(ScaleDimension(4), 0, 0, 0);
+  end;
+end;
+
+procedure TFrmProperties.ShowTaskbarIconValue;
+begin
+  lblTaskbarIconValue.Caption := DescribeIconSpec(FTaskbarIconValue);
+end;
+
+{ Icon picker: modern icons, PNG/ICO files or Windows icons }
+procedure TFrmProperties.TaskbarIconChangeClick(Sender: TObject);
+var spec: string;
+begin
+  spec := FTaskbarIconValue;
+  if PickIcon(Self, spec)
+  then begin
+    FTaskbarIconValue := spec;
+    ShowTaskbarIconValue;
+    Changed(Sender);
+  end;
+end;
+
+procedure TFrmProperties.TaskbarIconAutoClick(Sender: TObject);
+begin
+  FTaskbarIconValue := '';
+  ShowTaskbarIconValue;
+  Changed(Sender);
 end;
 
 { Small / medium / large: icon size + margins }
@@ -509,6 +637,14 @@ begin
   InitOffsetSize(pnlZoom, pnlBarStyle);
   // Hide when an app is full screen
   InitOffsetSize(pnlHideFullscreen, pnlZoom);
+  // Collapse instead of hiding when an app is full screen
+  InitOffsetSize(pnlCollapseFullscreen, pnlHideFullscreen);
+  // Icon of the taskbar button
+  // Animate collapse / expand
+  InitOffsetSize(pnlAnimateCollapse, pnlCollapseFullscreen);
+  // Collapse after some time without using the bar
+  InitOffsetSize(pnlAutoCollapse, pnlAnimateCollapse);
+  InitOffsetSize(pnlTaskbarIcon, pnlAutoCollapse);
 
 
   pgc1.Height := tsPanel.Top + pnlSeparator2.BoundsRect.Bottom + VO2 + tsPanel.Left;
@@ -541,6 +677,11 @@ begin
   chbSysWidgets.Checked := FLinkbar.ShowSysWidgets;
   chbAutoStart.Checked := IsAutoStartEnabled;
   chbHideFullscreen.Checked := FLinkbar.HideOnFullscreen;
+  chbCollapseFullscreen.Checked := FLinkbar.CollapseOnFullscreen;
+  chbAnimateCollapse.Checked := FLinkbar.AnimateCollapse;
+  chbAutoCollapse.Checked := FLinkbar.AutoCollapseSecs > 0;
+  FTaskbarIconValue := FLinkbar.TaskbarIcon;
+  ShowTaskbarIconValue;
   cbbBarStyle.ItemIndex := FLinkbar.BarStyle;
   trbZoom.Position := FLinkbar.ZoomPercent;
   trbZoomChange(nil);
@@ -677,7 +818,7 @@ begin
   L10nControl(chbSysWidgets,           'Properties.SysWidgets');
   L10nControl(chbAutoStart,            'Properties.AutoStart');
   L10nControl(lblBarStyle,             'Properties.BarStyle');
-  L10nControl(cbbBarStyle,            ['Properties.BarStyleNormal', 'Properties.BarStyleDock']);
+  L10nControl(cbbBarStyle,            ['Properties.BarStyleNormal', 'Properties.BarStyleDock', 'Properties.BarStyleTaskbar']);
   L10nControl(lblZoom,                 'Properties.Zoom');
 
   // Items
@@ -891,6 +1032,14 @@ begin
   FLinkbar.ShowSysWidgets := chbSysWidgets.Checked;
   SetAutoStart(chbAutoStart.Checked);
   FLinkbar.HideOnFullscreen := chbHideFullscreen.Checked;
+  FLinkbar.CollapseOnFullscreen := chbCollapseFullscreen.Checked;
+  FLinkbar.AnimateCollapse := chbAnimateCollapse.Checked;
+  // Keep a custom value from the INI while it stays checked
+  if not chbAutoCollapse.Checked
+  then FLinkbar.AutoCollapseSecs := 0
+  else if (FLinkbar.AutoCollapseSecs = 0)
+  then FLinkbar.AutoCollapseSecs := AUTOCOLLAPSE_DEFAULT_SECS;
+  FLinkbar.TaskbarIcon := FTaskbarIconValue;
   FLinkbar.ZoomPercent := trbZoom.Position;
   FLinkbar.BarStyle := cbbBarStyle.ItemIndex;
   FLinkbar.ApplyWindowAccent; // dock: repaint with the new color

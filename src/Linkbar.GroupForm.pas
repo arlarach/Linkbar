@@ -21,6 +21,12 @@ type
   TGroupDragOutEvent = procedure(const AFileName: string; AIcon: HBITMAP;
     AIconSize: Integer) of object;
 
+  { Lets the owner add its own items to the menu of the top level }
+  TGroupMenuEvent = procedure(AMenu: TPopupMenu) of object;
+
+  { Current CPU and RAM use in % (CPU/RAM row of the taskbar icon popup) }
+  TGetSysStatsEvent = procedure(out ACpu, ARam: Integer) of object;
+
   { Popup window that shows the shortcuts of a group as a grid of icons }
   TFormGroup = class(TForm)
   private
@@ -48,6 +54,19 @@ type
     FHotColor: Cardinal;
     FColorTarget: string;     // folder whose color is being changed (menu)
     FOnGroupChanged: TNotifyEvent;
+    FOnRootMenu: TGroupMenuEvent;
+    FOnGetSysStats: TGetSysStatsEvent;
+    FStatsTimer: TComponent;  // TTimer, created by EnableSysStats
+    FCpu, FRam: Integer;
+    FTitleH: Integer;         // height of the title part of the header
+    FStatsH: Integer;         // height of the CPU/RAM row (0 = none)
+    FRootLocked: Boolean;     // top level = the bar's links folder: keep its order (separators)
+    FActionTarget: HWND;      // window that receives the keys of action buttons
+    procedure SetRootLocked(const AValue: Boolean);
+    procedure StatsTimer(Sender: TObject);
+    function StatsRect: TRect;
+    procedure PaintStats;
+    function RootIsLocked: Boolean;
     procedure ApplyGroupColors;
     procedure DoSetColor(Sender: TObject);
     procedure AddColorMenu(AMenu: TPopupMenu; const ATarget: string);
@@ -66,6 +85,12 @@ type
     function DropIndexAt(const APoint: TPoint): Integer;
     procedure DoSortAlphabetically(Sender: TObject);
     procedure DoNewGroup(Sender: TObject);
+    procedure DoNewAction(Sender: TObject);
+    procedure DoEditAction(Sender: TObject);
+    procedure DoDeleteAction(Sender: TObject);
+    procedure MenuMeasureItem(Sender: TObject; ACanvas: TCanvas; var AWidth, AHeight: Integer);
+    procedure MenuDrawItem(Sender: TObject; ACanvas: TCanvas; ARect: TRect; ASelected: Boolean);
+    procedure PopupStyled(AMenu: TPopupMenu; const AX, AY: Integer);
     procedure DoRenameSubGroup(Sender: TObject);
     procedure DoOpenFolder(Sender: TObject);
     procedure Reposition;
@@ -89,6 +114,14 @@ type
     property OnDragOut: TGroupDragOutEvent read FOnDragOut write FOnDragOut;
     { The group content/look changed (bar must redraw the group icon) }
     property OnGroupChanged: TNotifyEvent read FOnGroupChanged write FOnGroupChanged;
+    { The top level is the bar's own links folder ("taskbar icon" mode):
+      no reordering there, the bar keeps its order and separators }
+    property RootLocked: Boolean read FRootLocked write SetRootLocked;
+    { Window in front before the popup opened (action buttons send keys to it) }
+    property ActionTarget: HWND read FActionTarget write FActionTarget;
+    property OnRootMenu: TGroupMenuEvent read FOnRootMenu write FOnRootMenu;
+    { Show a live CPU/RAM row under the title (call before PopupAt) }
+    procedure EnableSysStats(const AProvider: TGetSysStatsEvent);
     { Group opened from the bar (top of the navigation stack) }
     property RootFolder: string read GetRootFolder;
   end;
@@ -96,8 +129,8 @@ type
 implementation
 
 uses
-  System.Math, GdiPlus, Vcl.Dialogs, Winapi.ShellAPI,
-  ExplorerMenu, Linkbar.Theme, Linkbar.OS, Linkbar.L10n;
+  System.Math, GdiPlus, Vcl.Dialogs, Vcl.ExtCtrls, Winapi.ShellAPI,
+  ExplorerMenu, Linkbar.Theme, Linkbar.OS, Linkbar.L10n, Linkbar.Actions, Linkbar.Shell;
 
 { TFormGroup }
 
@@ -135,7 +168,8 @@ var
   fileName: string;
 begin
   FItems.Clear;
-  for fileName in TItemGroup.GetMemberFiles(FFolder) do
+  // Top level of the bar (taskbar icon mode): its action buttons too
+  for fileName in TItemGroup.GetMemberFiles(FFolder, True) do
   begin
     item := CreateItemForFile(fileName); // TItemGroup for sub-groups
     if item.LoadFromFile(fileName)
@@ -249,6 +283,114 @@ begin
   else Result := FFolder;
 end;
 
+{ ---------- CPU/RAM row ---------- }
+
+procedure TFormGroup.EnableSysStats(const AProvider: TGetSysStatsEvent);
+var t: TTimer;
+begin
+  FOnGetSysStats := AProvider;
+  if not Assigned(AProvider) then Exit;
+  AProvider(FCpu, FRam);
+  if not Assigned(FStatsTimer)
+  then begin
+    t := TTimer.Create(Self);
+    t.Interval := 1000;
+    t.OnTimer := StatsTimer;
+    FStatsTimer := t;
+  end;
+  CalcLayout;
+end;
+
+procedure TFormGroup.StatsTimer(Sender: TObject);
+var r: TRect;
+begin
+  if not Assigned(FOnGetSysStats) then Exit;
+  FOnGetSysStats(FCpu, FRam);
+  r := StatsRect;
+  InvalidateRect(Handle, @r, False);
+end;
+
+function TFormGroup.StatsRect: TRect;
+begin
+  Result := Rect(FPad, FTitleH - Scale(2), ClientWidth - FPad, FTitleH + FStatsH - Scale(4));
+end;
+
+{ "CPU 23%  ▬▬▬▭▭    RAM 61%  ▬▬▬▬▭" }
+procedure TFormGroup.PaintStats;
+const
+  CAPTIONS: array[0..1] of string = ('CPU', 'RAM');
+  COLORS: array[0..1] of Cardinal = ($FF3B82F6, $FF22C55E); // blue, green
+  COLOR_HIGH: Cardinal = $FFEF4444;                          // red when > 85%
+var
+  area, half, tr, bar, fill: TRect;
+  i, value, labelW, barH: Integer;
+  s: string;
+  gp: IGPGraphics;
+  brush: IGPBrush;
+  track: Cardinal;
+begin
+  if (FStatsH = 0) then Exit;
+  area := StatsRect;
+  if (FTextColor = clBlack)
+  then begin
+    track := $22000000;
+    Canvas.Font.Assign(Font);
+    Canvas.Font.Color := clBlack;
+  end
+  else begin
+    track := $33FFFFFF;
+    Canvas.Font.Assign(Font);
+    Canvas.Font.Color := RGB(140, 165, 180);
+  end;
+  labelW := Canvas.TextWidth('RAM 100%') + Scale(6);
+  barH := Max(4, Scale(6));
+
+  for i := 0 to 1 do
+  begin
+    if (i = 0) then value := FCpu else value := FRam;
+    half := area;
+    if (i = 0)
+    then half.Right := area.Left + area.Width div 2 - Scale(6)
+    else half.Left := area.Left + area.Width div 2 + Scale(6);
+
+    s := CAPTIONS[i] + ' ' + IntToStr(value) + '%';
+    tr := Rect(half.Left, half.Top, half.Left + labelW, half.Bottom);
+    DrawText(Canvas.Handle, PChar(s), -1, tr, DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX);
+
+    bar := Rect(tr.Right, half.Top + (half.Height - barH) div 2, half.Right, 0);
+    bar.Bottom := bar.Top + barH;
+    if (bar.Width <= barH) then Continue;
+    gp := TGPGraphics.Create(Canvas.Handle);
+    gp.SmoothingMode := SmoothingModeAntiAlias;
+    brush := TGPSolidBrush.Create(track);
+    GPFillRoundRect(gp, brush, bar, barH div 2);
+    fill := bar;
+    fill.Right := bar.Left + Round(bar.Width * EnsureRange(value, 0, 100) / 100);
+    if (fill.Width > 0)
+    then begin
+      if (value > 85)
+      then brush := TGPSolidBrush.Create(COLOR_HIGH)
+      else brush := TGPSolidBrush.Create(COLORS[i]);
+      GPFillRoundRect(gp, brush, fill, barH div 2);
+    end;
+    brush := nil;
+    gp := nil;
+  end;
+end;
+
+procedure TFormGroup.SetRootLocked(const AValue: Boolean);
+begin
+  if (FRootLocked = AValue) then Exit;
+  FRootLocked := AValue;
+  LoadItems;   // the top level now includes the action buttons
+  CalcLayout;
+end;
+
+function TFormGroup.RootIsLocked: Boolean;
+begin
+  Result := FRootLocked and (FStack.Count = 0);
+end;
+
 procedure TFormGroup.DoChanged;
 begin
   if Assigned(FOnGroupChanged)
@@ -359,6 +501,7 @@ var
   sl: TStringList;
   item: TItemShortcut;
 begin
+  if RootIsLocked then Exit;
   sl := TStringList.Create;
   try
     for item in FItems do
@@ -419,6 +562,197 @@ begin
   end;
   ForceDirectories(dirName);
   Reload;
+end;
+
+{ ---------- Sci-Fi menu style (same look as the bar menus) ---------- }
+
+var
+  GroupMenuBrush: HBRUSH = 0;
+
+procedure TFormGroup.MenuMeasureItem(Sender: TObject; ACanvas: TCanvas; var AWidth, AHeight: Integer);
+begin
+  if TMenuItem(Sender).IsLine
+  then begin
+    AWidth := 10;
+    AHeight := 12;
+  end
+  else begin
+    AWidth := ACanvas.TextWidth(StringReplace(TMenuItem(Sender).Caption, '&', '', [rfReplaceAll])) + 50;
+    AHeight := 28;
+  end;
+end;
+
+procedure TFormGroup.MenuDrawItem(Sender: TObject; ACanvas: TCanvas; ARect: TRect; ASelected: Boolean);
+var
+  item: TMenuItem;
+  gp: IGPGraphics;
+  brush: IGPBrush;
+  r, tr: TRect;
+  str: string;
+begin
+  item := TMenuItem(Sender);
+  gp := TGPGraphics.Create(ACanvas.Handle);
+  brush := TGPSolidBrush.Create($FF101010);
+  GPFillRoundRect(gp, brush, ARect, 0);
+
+  if ASelected and item.Enabled and not item.IsLine
+  then begin
+    tr := ARect;
+    InflateRect(tr, -2, -2);
+    brush := TGPSolidBrush.Create($3300AAFF);
+    GPFillRoundRect(gp, brush, tr, 4);
+  end;
+
+  if item.IsLine
+  then begin
+    tr := ARect;
+    tr.Top := ARect.Top + ARect.Height div 2;
+    tr.Bottom := tr.Top + 1;
+    tr.Left := tr.Left + 8;
+    tr.Right := tr.Right - 8;
+    brush := TGPSolidBrush.Create($FF333333);
+    GPFillRoundRect(gp, brush, tr, 0);
+    Exit;
+  end;
+
+  str := StringReplace(item.Caption, '&', '', [rfReplaceAll]);
+  ACanvas.Brush.Style := bsClear;
+  if ASelected and item.Enabled
+  then ACanvas.Font.Color := RGB(0, 200, 255)
+  else if item.Enabled
+  then ACanvas.Font.Color := RGB(140, 165, 180)
+  else ACanvas.Font.Color := RGB(70, 80, 90);
+
+  r := ARect;
+  r.Left := r.Left + 20;
+  DrawText(ACanvas.Handle, PChar(str), Length(str), r, DT_SINGLELINE or DT_VCENTER);
+
+  if item.Checked
+  then begin
+    r := ARect;
+    r.Left := r.Left + 6;
+    DrawText(ACanvas.Handle, PChar(#$2022), 1, r, DT_SINGLELINE or DT_VCENTER);
+  end;
+
+  if item.Count > 0
+  then begin
+    r := ARect;
+    r.Left := r.Right - 20;
+    DrawText(ACanvas.Handle, PChar('>'), 1, r, DT_SINGLELINE or DT_VCENTER);
+  end;
+end;
+
+{ Popup a menu with the Sci-Fi look: owner-draw items, dark background, no check column }
+procedure TFormGroup.PopupStyled(AMenu: TPopupMenu; const AX, AY: Integer);
+var
+  mi: TMenuInfo;
+
+  procedure StyleItems(AParent: TMenuItem);
+  var k: Integer;
+  begin
+    for k := 0 to AParent.Count - 1
+    do begin
+      AParent[k].OnMeasureItem := MenuMeasureItem;
+      AParent[k].OnDrawItem := MenuDrawItem;
+      if (AParent[k].Count > 0)
+      then StyleItems(AParent[k]);
+    end;
+  end;
+
+  procedure ApplyInfo(AParent: TMenuItem);
+  var k: Integer;
+  begin
+    for k := 0 to AParent.Count - 1
+    do if (AParent[k].Count > 0)
+       then begin
+         SetMenuInfo(AParent[k].Handle, mi);
+         ApplyInfo(AParent[k]);
+       end;
+  end;
+
+begin
+  StyleItems(AMenu.Items);
+  AMenu.OwnerDraw := True;
+
+  if (GroupMenuBrush = 0)
+  then GroupMenuBrush := CreateSolidBrush(RGB(10, 20, 35));
+  mi := Default(TMenuInfo);
+  mi.cbSize := SizeOf(TMenuInfo);
+  mi.fMask := MIM_STYLE or MIM_BACKGROUND;
+  mi.dwStyle := MNS_NOCHECK;
+  mi.hbrBack := GroupMenuBrush;
+  SetMenuInfo(AMenu.Handle, mi);
+  ApplyInfo(AMenu.Items);
+
+  AMenu.Popup(AX, AY);
+end;
+
+{ New action button inside the current group }
+procedure TFormGroup.DoNewAction(Sender: TObject);
+var name, fn: string;
+    data: TActionData;
+    n: Integer;
+begin
+  name := '';
+  data.Clear;
+  FModalOpen := True;
+  try
+    if not EditAction(name, data, True)
+    then Exit;
+  finally
+    FModalOpen := False;
+    SetForegroundWindow(Handle);
+  end;
+  fn := IncludeTrailingPathDelimiter(FFolder) + name + ES_ACTION;
+  n := 2;
+  while FileExists(fn) do
+  begin
+    fn := IncludeTrailingPathDelimiter(FFolder) + name + ' ' + IntToStr(n) + ES_ACTION;
+    Inc(n);
+  end;
+  SaveActionFile(fn, data);
+  Reload;
+  DoChanged;
+end;
+
+{ Edit an action button (Tag of the menu item = index) }
+procedure TFormGroup.DoEditAction(Sender: TObject);
+var i: Integer;
+    item: TItemAction;
+    name, oldFile, newFile: string;
+    data: TActionData;
+begin
+  i := TMenuItem(Sender).Tag;
+  if (i < 0) or (i >= FItems.Count) or not (FItems[i] is TItemAction) then Exit;
+  item := TItemAction(FItems[i]);
+  oldFile := item.FileName;
+  name := item.Caption;
+  data := item.Data;
+  FModalOpen := True;
+  try
+    if not EditAction(name, data, False)
+    then Exit;
+  finally
+    FModalOpen := False;
+    SetForegroundWindow(Handle);
+  end;
+  SaveActionFile(oldFile, data);
+  newFile := ExtractFilePath(oldFile) + name + ES_ACTION;
+  if not SameText(newFile, oldFile) and not FileExists(newFile)
+  then RenameFile(oldFile, newFile);
+  Reload;
+  DoChanged;
+end;
+
+{ Delete an action button (Tag of the menu item = index) }
+procedure TFormGroup.DoDeleteAction(Sender: TObject);
+var i: Integer;
+begin
+  i := TMenuItem(Sender).Tag;
+  if (i < 0) or (i >= FItems.Count) or not (FItems[i] is TItemAction) then Exit;
+  SHDeleteOp(Handle, FItems[i].FileName, True);
+  Reload;
+  DoChanged;
 end;
 
 { Rename a sub-group (Tag of the menu item = index) }
@@ -524,7 +858,11 @@ begin
   FRadius := Scale(8);
   FCellW := Max(FIconSize + Scale(24), Scale(84));
   FCellH := Scale(10) + FIconSize + Scale(6) + textH * 2 + Scale(8);
-  FHeaderHeight := Scale(10) + textH + Scale(6);
+  FTitleH := Scale(10) + textH + Scale(6);
+  if Assigned(FOnGetSysStats)
+  then FStatsH := textH + Scale(10)
+  else FStatsH := 0;
+  FHeaderHeight := FTitleH + FStatsH;
 
   n := FItems.Count;
   if (n <= 4) then FCols := Max(n, 1)
@@ -624,6 +962,11 @@ begin
     DT_CENTER or DT_TOP or DT_SINGLELINE or DT_END_ELLIPSIS or DT_NOPREFIX);
   Canvas.Font.Style := [];
 
+  // CPU/RAM row (taskbar icon mode)
+  PaintStats;
+  Canvas.Font.Assign(Font);
+  Canvas.Font.Color := FTextColor;
+
   // Empty group hint
   if (FItems.Count = 0)
   then begin
@@ -711,6 +1054,7 @@ begin
   then begin
     // Start dragging after the system drag threshold
     if not FDragging
+       and not RootIsLocked
        and ((Abs(X - FDownPt.X) > GetSystemMetrics(SM_CXDRAG))
             or (Abs(Y - FDownPt.Y) > GetSystemMetrics(SM_CYDRAG)))
     then FDragging := True;
@@ -791,8 +1135,17 @@ begin
     Exit;
   end;
 
+  // Click on the CPU/RAM row: Task Manager
+  if (Button = mbLeft) and (FStatsH > 0) and (Y >= FTitleH) and (Y < FHeaderHeight)
+  then begin
+    FDownIndex := -1;
+    ShellExecute(0, 'open', 'taskmgr.exe', nil, nil, SW_SHOWNORMAL);
+    Close;
+    Exit;
+  end;
+
   // Left click on the title of a sub-group: go back to the parent group
-  if (Button = mbLeft) and (Y < FHeaderHeight) and (FStack.Count > 0)
+  if (Button = mbLeft) and (Y < FTitleH) and (FStack.Count > 0)
   then begin
     FDownIndex := -1;
     NavigateBack;
@@ -808,9 +1161,16 @@ begin
     mi.OnClick := DoNewGroup;
     menu.Items.Add(mi);
     mi := TMenuItem.Create(menu);
-    mi.Caption := L10NFind('Group.SortAlphabetically', 'Sort alphabetically');
-    mi.OnClick := DoSortAlphabetically;
+    mi.Caption := L10NFind('Menu.Action', 'Action button');
+    mi.OnClick := DoNewAction;
     menu.Items.Add(mi);
+    if not RootIsLocked
+    then begin
+      mi := TMenuItem.Create(menu);
+      mi.Caption := L10NFind('Group.SortAlphabetically', 'Sort alphabetically');
+      mi.OnClick := DoSortAlphabetically;
+      menu.Items.Add(mi);
+    end;
     mi := TMenuItem.Create(menu);
     mi.Caption := L10NFind('Group.OpenFolder', 'Open folder');
     mi.Tag := -1;
@@ -818,8 +1178,34 @@ begin
     menu.Items.Add(mi);
     menu.Items.NewBottomLine;
     AddColorMenu(menu, FFolder);
+    // Owner items (taskbar icon mode: settings, show as a bar...)
+    if (FStack.Count = 0) and Assigned(FOnRootMenu)
+    then begin
+      menu.Items.NewBottomLine;
+      FOnRootMenu(menu);
+    end;
     pt := ClientToScreen(Point(X, Y));
-    menu.Popup(pt.X, pt.Y);
+    PopupStyled(menu, pt.X, pt.Y);
+    Exit;
+  end;
+
+  // Right click on an action button: edit / delete
+  i := IndexAt(Point(X, Y));
+  if (Button = mbRight) and (i >= 0) and (FItems[i] is TItemAction)
+  then begin
+    menu := TPopupMenu.Create(Self);
+    mi := TMenuItem.Create(menu);
+    mi.Caption := L10NFind('Menu.EditAction', 'Edit action...');
+    mi.Tag := i;
+    mi.OnClick := DoEditAction;
+    menu.Items.Add(mi);
+    mi := TMenuItem.Create(menu);
+    mi.Caption := L10NFind('Menu.DeleteAction', 'Delete action');
+    mi.Tag := i;
+    mi.OnClick := DoDeleteAction;
+    menu.Items.Add(mi);
+    pt := ClientToScreen(Point(X, Y));
+    PopupStyled(menu, pt.X, pt.Y);
     Exit;
   end;
 
@@ -841,7 +1227,7 @@ begin
     menu.Items.NewBottomLine;
     AddColorMenu(menu, ExcludeTrailingPathDelimiter(FItems[i].FileName));
     pt := ClientToScreen(Point(X, Y));
-    menu.Popup(pt.X, pt.Y);
+    PopupStyled(menu, pt.X, pt.Y);
     Exit;
   end;
 
@@ -857,6 +1243,15 @@ begin
   if (Button = mbLeft) and (FItems[i] is TItemGroup)
   then begin
     NavigateInto(i);
+    Exit;
+  end;
+
+  // Action button: close first so the keys go to the window that was in front
+  if (Button = mbLeft) and (FItems[i] is TItemAction)
+  then begin
+    var data := TItemAction(FItems[i]).Data;
+    Close;
+    RunAction(data, FActionTarget);
     Exit;
   end;
 

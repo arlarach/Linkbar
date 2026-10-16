@@ -121,11 +121,17 @@ const
   DEF_BAR_STYLE                 = 0;    // 0 = normal (screen edge), 1 = dock (Mac-like)
   DEF_ZOOM                      = 100;  // magnification in %, 100 = off
   DEF_DOCK_POS                  = 500;  // dock position along the edge, 0..1000 (500 = centered)
+  DEF_COLLAPSED                 = False; // bar collapsed with ">>" (pinned items + CPU/RAM only)
   DEF_HIDE_FULLSCREEN           = False;
+  DEF_AUTOCOLLAPSE              = 0;     // seconds without using the bar before collapsing it, 0 = off
+  AUTOCOLLAPSE_DEFAULT_SECS     = 30;    // value used when it is turned on from the menu / settings
+  DEF_ANIMATE_COLLAPSE          = True; // animate ">>" collapse / expand (dock mode)
+  DEF_COLLAPSE_FULLSCREEN       = False; // collapse (">>") instead of hiding when an app is full screen
   ZOOM_MIN                      = 100;
   ZOOM_MAX                      = 200;
   BAR_STYLE_NORMAL              = 0;
   BAR_STYLE_DOCK                = 1;
+  BAR_STYLE_TASKBAR             = 2;    // only a button on the Windows taskbar; click = popup
   DEF_ICON_SIZE                 = 32;
   DEF_ISLIGHT                   = False;
   DEF_ITEM_ORDER                = EItemOrderLeftToRight;
@@ -169,8 +175,13 @@ const
   INI_BAR_STYLE                 = 'barstyle';
   INI_ZOOM                      = 'zoom';
   INI_DOCK_POS                  = 'dockpos';
+  INI_COLLAPSED                 = 'collapsed';
   INI_PROFILE                   = 'profile';
   INI_HIDE_FULLSCREEN           = 'hidefullscreen';
+  INI_COLLAPSE_FULLSCREEN       = 'collapsefullscreen';
+  INI_ANIMATE_COLLAPSE          = 'animatecollapse';
+  INI_AUTOCOLLAPSE              = 'autocollapse';
+  INI_TASKBAR_ICON              = 'taskbaricon';      // '' = automatic (2x2 of the bar's icons), else "file,index"
   INI_ICON_SIZE                 = 'iconsize';
   INI_ISLIGHT                   = 'usestylecombined';
   INI_ITEM_ORDER                = 'itemorder';
@@ -200,7 +211,8 @@ const
   INI_SEPARATOR_STYLE           = 'separatorstyle';
 
   LINKSLIST_FILE_NAME  = 'list';
-  GROUPCOLOR_FILE_NAME = 'color';                                              // group background color (#RRGGBB)
+  PINNED_FILE_NAME     = 'pinned';                                             // items that stay visible when collapsed
+  GROUPCOLOR_FILE_NAME = 'color';                                            // group background color (#RRGGBB)
 
 var
   GlobalLayout:           TPanelLayout = DEF_ITEMS_ALIGN;
