@@ -12,7 +12,7 @@ interface
 
 uses
   Windows, Classes, Types,
-  Linkbar.Consts;
+  LBToolbar, Linkbar.Consts, Linkbar.Graphics;
 
 type
   ILinkbarHost = interface
@@ -34,6 +34,42 @@ type
     procedure BarStartTimer(const AId: UINT; const AMs: Cardinal);
     procedure BarStopTimer(const AId: UINT);
     procedure BarCancelTooltip;
+    // Closes the thumbnails and the tooltip
+    procedure BarDismissPopups;
+    procedure BarSetAutoHideLock(const ALock: Boolean);
+    // Links folder of the current profile
+    function BarWorkDir: string;
+    function BarItems: TLBItemList;
+    function BarSettingsFile: string;
+    // Work area of the monitor of the bar
+    function BarWorkArea: TRect;
+    // Bounds of the bar window
+    function BarBounds: TRect;
+    // Moves the window keeping its size
+    procedure BarMoveTo(const AX, AY: Integer);
+    function BarIsDock: Boolean;
+    function BarBackgroundColor: Cardinal;
+    function BarIsLightStyle: Boolean;
+    function BarHotIndex: Integer;
+    function BarPressedIndex: Integer;
+    // The bitmap where the bar draws its items
+    function BarPanelBitmap: THBitmap;
+    // The bitmap with the look of a pressed / selected button
+    function BarButtonBitmap: THBitmap;
+    // Offset of the icon inside the button of an item
+    function BarIconOffset: TPoint;
+    function BarSeparatorStyle: TSeparatorStyle;
+    function BarSeparatorWidth: Integer;
+    function BarItemsMargin: Integer;
+    // Space kept at the end of the bar for the CPU / RAM widgets
+    function BarReservedLength(const AVertical: Boolean): Integer;
+    function BarTextLayout: TTextLayout;
+    function BarTextRect: TRect;
+    function BarUseTextColor: Boolean;
+    function BarTextColor: Cardinal;
+    function BarGlowSize: Integer;
+    // Draws the "program is open" pill and the pinned dot of an item
+    procedure BarDrawItemMarks(const ABitmap: THBitmap; const AItem: TItemBase; const ARect: TRect);
   end;
 
 implementation

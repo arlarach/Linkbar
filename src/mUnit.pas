@@ -17,10 +17,11 @@ uses
   AccessBar, LBToolbar, Linkbar.Consts, Linkbar.Hint, Linkbar.Taskbar, HotKey,
   Linkbar.Graphics, Linkbar.Bar.Host, Linkbar.Bar.SaveQueue, Linkbar.Bar.Profiles,
   Linkbar.Bar.SysWidgets, Linkbar.Bar.Collapse, Linkbar.Bar.Fullscreen,
-  Linkbar.Bar.Thumbs, Linkbar.Bar.Running;
+  Linkbar.Bar.Thumbs, Linkbar.Bar.Running, Linkbar.Bar.Launcher,
+  Linkbar.Bar.Pinned, Linkbar.Bar.ActionButtons, Linkbar.Bar.Zoom, Linkbar.Bar.Dock, Linkbar.Bar.DropTarget, Linkbar.Bar.Painter, Linkbar.Bar.PopupMenu;
 
 type
-  TLinkbarWcl = class(TLinkbarCustomFrom, ILinkbarHost, ICollapseHost, IFullscreenHost, IThumbsHost)
+  TLinkbarWcl = class(TLinkbarCustomFrom, ILinkbarHost, ICollapseHost, IFullscreenHost, IThumbsHost, ILauncherHost, IPinnedHost, IActionButtonsHost, IDockHost, IDropTargetHost)
     pMenu: TPopupMenu;
     imClose: TMenuItem;
     imProperties: TMenuItem;
@@ -65,7 +66,8 @@ type
     procedure imNewGroupClick(Sender: TObject);
   private
     BitmapSelected: THBitmap;
-    BitmapDropPosition: THBitmap;
+    FDropTarget: TBarDropTarget;  // drop indicator
+    FPainter: TBarPainter;        // background, captions and icons
     BitmapButton: THBitmap;
     BitmapPanel: THBitmap;
     Items: TLBItemList;
@@ -91,20 +93,14 @@ type
     FModernStyle: Boolean;
     FExtDragIcon: HBITMAP;
     FBarStyle: Integer;          // BAR_STYLE_NORMAL / BAR_STYLE_DOCK
-    FZoomPercent: Integer;       // magnification 100..200 (100 = off)
-    FZoomCursor: Integer;        // mouse position along the bar, -1 = none
-    FDockPos: Integer;           // dock position along the edge 0..1000
-    FDockSliding: Boolean;       // Ctrl+drag in progress
-    FSlideMoved: Boolean;
-    FSlideStartCursor: TPoint;
-    FSlideStartPos: TPoint;
+    FZoom: TBarZoom;             // magnification of the dock
+    FDock: TBarDock;             // dock style
     FThumbs: TThumbController;  // live thumbnails
     FRunning: TRunningIndicator;  // "program is open" indicator
     FForegroundAtMouseDown: HWND;
-    FTaskbarButton: TForm;       // "taskbar icon" mode (Linkbar.TaskbarButton)
-    FLauncherOpen: Boolean;      // its popup is open
-    FLauncherClosedAt: Cardinal; // when the popup closed (a click on the button closes it)
-    FTaskbarIcon: string;        // icon of the taskbar button: '' = automatic, "file,index"
+    FLauncher: TLauncherMode;    // "taskbar icon" mode
+    FPinned: TPinnedItems;       // items kept visible when collapsed
+    FActionEditor: TActionButtonEditor;  // new / edit / delete action buttons
     FFullscreen: TFullscreenWatcher;  // window in front / full screen apps
     FProfiles: TProfileManager;  // profile folders (current profile '' = main)
     FSaveQueue: TFileSaveQueue;  // list files write queue (retries when locked)
@@ -149,7 +145,6 @@ type
   private
     // Collapse / expand animation (dock mode only)
     procedure TooltipAnchor(const ARect: TRect; out APt: TPoint; out AHA: TAlignment; out AVA: TVerticalAlignment);
-    procedure DrawPinnedMark(const ABitmap: THBitmap; const AItem: TItemBase; const ARect: TRect);
     procedure SetAutoCollapseSecs(AValue: Integer);
     function GetAutoCollapseSecs: Integer;
     function GetAnimateCollapse: Boolean;
@@ -183,33 +178,24 @@ type
     function GetShowSysWidgets: Boolean;
     procedure SetBarStyle(AValue: Integer);
     procedure SetZoomPercent(AValue: Integer);
+    function GetZoomPercent: Integer;
     function IsDock: Boolean;
     function IsTaskbarIcon: Boolean;
     procedure ApplyTaskbarMode;
-    procedure TaskbarButtonClick(Sender: TObject);
-    procedure TaskbarButtonClose(Sender: TObject);
-    procedure LauncherPopupDestroy(Sender: TObject);
-    procedure LauncherRootMenu(AMenu: TPopupMenu);
     procedure WMInitMenuPopup(var Message: TWMInitMenuPopup); message WM_INITMENUPOPUP;
     procedure WMMeasureItem(var Message: TWMMeasureItem); message WM_MEASUREITEM;
     procedure WMDrawItem(var Message: TWMDrawItem); message WM_DRAWITEM;
     procedure LauncherShowAsBar(Sender: TObject);
-    procedure LauncherSysStats(out ACpu, ARam: Integer);
-    procedure LauncherChanged(Sender: TObject);
     procedure UpdateTaskbarIcon;
     procedure SetTaskbarIcon(const AValue: string);
+    function GetTaskbarIcon: string;
     function ZoomEnabled: Boolean;
     function ZoomRoom: Integer;
     function ZoomIconSizeValue: Integer;
     function DockPad: Integer;
     function ItemsMargin: Integer;
-    procedure DockBounds(var AX, AY, AWidth, AHeight: Integer);
     procedure ApplyDockRegion(const AWidth, AHeight: Integer);
-    procedure DrawItemsZoomed;
     procedure RedrawZoom;
-    procedure SlideDock(const ACursor: TPoint);
-    procedure DrawDockBackground(const ABitmap: THBitmap; const AClipRect: TRect);
-    procedure SaveDockPos;
     procedure RefreshSysWidgets;
     procedure UpdateRunningState;
     procedure ThumbsHotChanged;
@@ -268,6 +254,55 @@ type
     function BarItemRect(const AIndex: Integer): TRect;
     function BarHotIndex: Integer;
     function BarThumbsBlocked: Boolean;
+    // ILauncherHost
+    function BarPanelName: string;
+    function BarSettingsFile: string;
+    function BarWorkDir: string;
+    procedure BarHideForLauncher;
+    procedure BarRestoreFromLauncher;
+    function BarActionTarget: HWND;
+    function BarSysStatsEnabled: Boolean;
+    procedure BarSysStats(out ACpu, ARam: Integer);
+    procedure BarFillLauncherMenu(AMenu: TPopupMenu);
+    procedure BarCloseRequested(Sender: TObject);
+    procedure BarActivate(const AWnd: HWND);
+    // IPinnedHost / IActionButtonsHost / common services
+    procedure BarPinnedChanged;
+    // IPainterHost (common bar services)
+    function BarButtonBitmap: THBitmap;
+    function BarIsLightStyle: Boolean;
+    function BarPressedIndex: Integer;
+    function BarSeparatorWidth: Integer;
+    function BarItemsMargin: Integer;
+    function BarReservedLength(const AVertical: Boolean): Integer;
+    function BarTextLayout: TTextLayout;
+    function BarTextRect: TRect;
+    function BarUseTextColor: Boolean;
+    function BarTextColor: Cardinal;
+    function BarGlowSize: Integer;
+    // IDropTargetHost
+    function BarItemAt(const APt: TPoint): Integer;
+    function BarDraggingItem: Boolean;
+    function BarDragIndex: Integer;
+    function BarPanelBitmap: THBitmap;
+    function BarWorkDirPidl: PItemIDList;
+    procedure BarPaintDropHighlight(const AIndex: Integer; const ARect: TRect);
+    procedure BarRefresh;
+    // IDockHost
+    function BarIsDock: Boolean;
+    function BarExpandedLength(const AVertical: Boolean): Integer;
+    function BarBackgroundColor: Cardinal;
+    function BarOpaque: Boolean;
+    function BarWorkArea: TRect;
+    function BarBounds: TRect;
+    procedure BarMoveTo(const AX, AY: Integer);
+    // IZoomHost
+    function BarIconOffset: TPoint;
+    function BarSeparatorStyle: TSeparatorStyle;
+    procedure BarDrawItemMarks(const ABitmap: THBitmap; const AItem: TItemBase; const ARect: TRect);
+    function BarDockPad: Integer;
+    procedure BarRescanSoon;
+    function BarItems: TLBItemList;
   private
     procedure L10n;
     procedure LoadSettings;
@@ -328,8 +363,6 @@ type
     procedure CreateBitmaps;
   protected
     // Drag&Drop functions
-    FItemDropPosition: Integer;
-    FPidl: PItemIDList;
     procedure SetDropPosition(AValue: TPoint);
     procedure DoDragEnter(const pt: TPoint); override;
     procedure DoDragOver(const pt: TPoint; var ppidl: PItemIDList); override;
@@ -378,10 +411,10 @@ type
     property CollapseOnFullscreen: Boolean read GetCollapseOnFullscreen write SetCollapseOnFullscreen;
     property AnimateCollapse: Boolean read GetAnimateCollapse write SetAnimateCollapse;
     property AutoCollapseSecs: Integer read GetAutoCollapseSecs write SetAutoCollapseSecs;
-    property TaskbarIcon: string read FTaskbarIcon write SetTaskbarIcon;
+    property TaskbarIcon: string read GetTaskbarIcon write SetTaskbarIcon;
     property BarStyle: Integer read FBarStyle write SetBarStyle;
     procedure ApplyWindowAccent;
-    property ZoomPercent: Integer read FZoomPercent write SetZoomPercent;
+    property ZoomPercent: Integer read GetZoomPercent write SetZoomPercent;
     property HotIndex: Integer read FHotIndex write SetHotIndex;
     property HotkeyInfo: THotkeyInfo read FHotkeyInfo write SetHotkeyInfo;
     property IconSize: Integer read FIconSize write SetIconSize;
@@ -605,236 +638,84 @@ end;
 
 procedure TLinkbarWcl.DrawBackground(const ABitmap: THBitmap;
   const AClipRect: TRect);
-var params: TDrawBackgroundParams;
 begin
-  // Dock: anti-aliased rounded background painted by Linkbar itself
-  if IsDock
-  then begin
-    DrawDockBackground(ABitmap, AClipRect);
-    Exit;
-  end;
-
-  params.Bitmap := ABitmap;
-  params.Align := Align;
-  params.ClipRect := AClipRect;
-  params.IsLight := IsLightStyle;
-  params.BgColor := BackgroundColor;
-  ThemeDrawBackground(@params);
+  if Assigned(FPainter)
+  then FPainter.DrawBackground(ABitmap, AClipRect);
 end;
 
 procedure TLinkbarWcl.DrawCaption(const ABitmap: THBitmap; const AIndex: Integer;
   const ADrawForDrag: Boolean = False);
-var
-  textRect: TRect;
-  textColor: TColor;
-  dc, dc2: HDC;
-  fnt0: HGDIOBJ;
 begin
-  if (TextLayout = ETextLayoutNone) then Exit;
-
-  const textFlags: Cardinal = TEXTALIGN[TextLayout] or DT_END_ELLIPSIS or DT_SINGLELINE or DT_NOPREFIX or DT_NOCLIP;
-
-  if (StyleServices.Enabled)
-  then begin
-    // Aero theme. Use DrawGlassText
-    if (FUseTextColor)
-    then begin
-      textColor := FTextColor;
-    end
-    else begin
-      if (AIndex = ITEM_ALL)
-      then begin
-        textColor := ThemeButtonNormalTextColor;
-      end
-      else begin
-        if (AIndex = PressedIndex)
-        then textColor := ThemeButtonPressedTextColor
-        else if (AIndex = HotIndex)
-             then textColor := ThemeButtonSelectedTextColor
-             else textColor := ThemeButtonNormalTextColor;
-      end;
-    end;
-
-    dc := ABitmap.Dc;
-
-    if (AIndex = ITEM_ALL)
-    then begin
-      fnt0 := SelectObject(dc, Screen.IconFont.Handle);
-      for var item in Items
-      do begin
-        if (not Items.IsSeparator(item))
-           and (not item.Rect.IsEmpty)
-        then begin
-          textRect := FTextRect;
-          textRect.Offset(item.Rect.TopLeft);
-          DrawGlassText(dc, item.Caption, textRect, textFlags, FGlowSize, textColor);
-        end;
-      end;
-      SelectObject(dc, fnt0);
-    end
-    else begin
-      const item = Items[AIndex];
-
-      if (not Items.IsSeparator(item))
-      then begin
-        if ADrawForDrag
-        then begin
-          textRect := FTextRect;
-          fnt0 := SelectObject(dc, Screen.IconFont.Handle);
-          DrawGlassText(dc, item.Caption, textRect, textFlags, FGlowSize, textColor);
-          SelectObject(dc, fnt0);
-        end
-        else begin
-          // The shadow extends beyond the button, creating artifacts
-          // Draw on separate bitmap with button size
-          var bmp := THBitmap.Create(32);
-          bmp.SetSize(BitmapButton.Width, BitmapButton.Height);
-          dc2 := bmp.Dc;
-
-          textRect := FTextRect;
-          if (AIndex = PressedIndex)
-          then textRect.Offset(1,1);
-
-          fnt0 := SelectObject(dc2, Screen.IconFont.Handle);
-          DrawGlassText(dc2, item.Caption, textRect, textFlags, FGlowSize, textColor);
-          SelectObject(dc2, fnt0);
-
-          Windows.AlphaBlend(dc,
-            item.Rect.Left, item.Rect.Top, bmp.Width, bmp.Height,
-            dc2, 0, 0, bmp.Width, bmp.Height, bf);
-
-          bmp.Free;
-        end;
-      end;
-    end;
-  end
-  else begin
-    // Classic theme
-    // NOTE: DrawThemeText/DrawThemeTextEx not work in Classic theme
-
-    Assert(not ADrawForDrag); // Classic Theme don't have Drag Image
-
-    textColor := clBtnText;
-
-    dc := ABitmap.Dc;
-    fnt0 := SelectObject(dc, Screen.IconFont.Handle);
-    SetTextColor(dc, ColorToRGB(textColor));
-    SetBkColor(dc, ColorToRGB(clBtnFace));
-
-    if (AIndex = ITEM_ALL)
-    then begin
-      for var item in Items
-      do begin
-        if (not Items.IsSeparator(item))
-           and (not item.Rect.IsEmpty)
-        then begin
-          textRect := FTextRect;
-          textRect.Offset(item.Rect.TopLeft);
-          DrawText(dc, item.Caption, -1, textRect, textFlags);
-        end;
-      end;
-      ABitmap.Opaque;
-    end
-    else begin
-      const item = Items[AIndex];
-      if (not Items.IsSeparator(item))
-      then begin
-        textRect := FTextRect;
-        textRect.Offset(item.Rect.TopLeft);
-        if (AIndex = PressedIndex)
-        then textRect.Offset(1,1);
-        DrawText(dc, item.Caption, -1, textRect, textFlags);
-        ABitmap.OpaqueRect(item.Rect);
-      end;
-    end;
-
-    SelectObject(dc, fnt0);
-  end;
+  if Assigned(FPainter)
+  then FPainter.DrawCaption(ABitmap, AIndex, ADrawForDrag);
 end;
 
 procedure TLinkbarWcl.DrawItem(ABitmap: THBitmap; AIndex: integer; ASelected,
   APressed: Boolean; ADrawBg: Boolean; ADrawForDrag: Boolean);
 begin
-  if AIndex = ITEM_NONE then Exit;
-
-  const item = Items[AIndex];
-  if Items.IsSeparator(item) then Exit;
-
-  var r := item.Rect;
-
-  // Classic themes have opaque background and button
-  if ADrawBg
-     and StyleServices.Enabled
-  then DrawBackground(ABitmap, r);
-
-  // For darg not need draw background
-  if ADrawForDrag
-  then r.Location := TPoint.Zero;
-
-  if APressed
-  then ThemeDrawButton(ABitmap, r, True)
-  else if ASelected
-       then begin
-         Windows.AlphaBlend(ABitmap.Dc, r.Left, r.Top, r.Width, r.Height, BitmapButton.Dc, 0, 0, r.Width, r.Height, bf);
-       end;
-
-  // Draw text
-  DrawCaption(ABitmap, AIndex, ADrawForDrag);
-
-  // Draw icon
-  var d: Integer := IfThen(APressed, 1, 0);
-  Items.Draw(ABitmap.Dc, item, r.Left + FIconOffset.X + d, r.Top + FIconOffset.Y + d);
-
-  // "Program is open" indicator
-  if not ADrawForDrag
-  then begin
-    FRunning.DrawMark(ABitmap, item, r);
-    DrawPinnedMark(ABitmap, item, r);
-  end;
+  if Assigned(FPainter)
+  then FPainter.DrawItem(ABitmap, AIndex, ASelected, APressed, ADrawBg, ADrawForDrag);
 end;
 
 procedure TLinkbarWcl.DrawItems(const AWidth, AHeight: integer);
 begin
-  Items.Sizes.Button := ButtonSize;
-  Items.Sizes.Separator := SeparatorWidth;
-  Items.Sizes.Margin := ItemsMargin;
-  Items.Sizes.ZoomRoom := ZoomRoom;
-  Items.Sizes.ZoomOffset := ZoomRoom div 2;
-  Items.Sizes.Reserved := FSysWidgets.ReservedLength(IsVertical(Align));
-  Items.Sizes.OnlyPinned := IsCollapsed;
-  Items.UpdateLines(IsVertical(Align), AWidth, AHeight);
+  if Assigned(FPainter)
+  then FPainter.DrawItems(AWidth, AHeight);
+end;
 
-  // Draw captions
-  DrawCaption(BitmapPanel, ITEM_ALL);
+function TLinkbarWcl.BarButtonBitmap: THBitmap;
+begin
+  Result := BitmapButton;
+end;
 
-  // Magnification effect (Mac-like)
-  if ZoomEnabled and (FZoomCursor >= 0) and (Items.Lines.Count = 1) and not IsCollapsed
-  then begin
-    DrawItemsZoomed;
-    Exit;
-  end;
+function TLinkbarWcl.BarIsLightStyle: Boolean;
+begin
+  Result := FIsLightStyle;
+end;
 
-  // Separator before the pinned items
-  if (not Items.PinnedSepRect.IsEmpty)
-     and (FSeparatorStyle <> ESeparatorStyleSpace)
-  then ThemeDrawSeparator(BitmapPanel, Align, Items.PinnedSepRect);
+function TLinkbarWcl.BarPressedIndex: Integer;
+begin
+  Result := FPressedIndex;
+end;
 
-  // Draw icons
-  for var item in Items do
-  begin
-    if item.Rect.IsEmpty  // collapsed bar: item without position
-    then Continue;
-    if Items.IsSeparator(item)
-       and (FSeparatorStyle <> ESeparatorStyleSpace)
-    then begin
-      ThemeDrawSeparator(BitmapPanel, Align, item.Rect);
-    end
-    else begin
-      Items.Draw(BitmapPanel.Dc, item, item.Rect.Left + FIconOffset.X, item.Rect.Top + FIconOffset.Y);
-      FRunning.DrawMark(BitmapPanel, item, item.Rect);
-      DrawPinnedMark(BitmapPanel, item, item.Rect);
-    end;
-  end;
+function TLinkbarWcl.BarSeparatorWidth: Integer;
+begin
+  Result := FSeparatorWidth;
+end;
+
+function TLinkbarWcl.BarItemsMargin: Integer;
+begin
+  Result := ItemsMargin;
+end;
+
+function TLinkbarWcl.BarReservedLength(const AVertical: Boolean): Integer;
+begin
+  Result := FSysWidgets.ReservedLength(AVertical);
+end;
+
+function TLinkbarWcl.BarTextLayout: TTextLayout;
+begin
+  Result := FTextLayout;
+end;
+
+function TLinkbarWcl.BarTextRect: TRect;
+begin
+  Result := FTextRect;
+end;
+
+function TLinkbarWcl.BarUseTextColor: Boolean;
+begin
+  Result := FUseTextColor;
+end;
+
+function TLinkbarWcl.BarTextColor: Cardinal;
+begin
+  Result := FTextColor;
+end;
+
+function TLinkbarWcl.BarGlowSize: Integer;
+begin
+  Result := FGlowSize;
 end;
 
 procedure TLinkbarWcl.RecreateMainBitmap(const AWidth, AHeight: integer);
@@ -860,7 +741,7 @@ begin
   // Buffer for selections
   BitmapSelected.SetSize(AWidth, AHeight);
   // Buffer for drop
-  BitmapDropPosition.SetSize(AWidth, AHeight);
+  FDropTarget.SetSize(AWidth, AHeight);
 end;
 
 procedure TLinkbarWcl.UpdateWindow;
@@ -1020,7 +901,7 @@ begin
   FCollapse.OnFullscreen := settings.Read(INI_COLLAPSE_FULLSCREEN, DEF_COLLAPSE_FULLSCREEN);
   FCollapse.AnimateEnabled      := settings.Read(INI_ANIMATE_COLLAPSE, DEF_ANIMATE_COLLAPSE);
   FCollapse.AutoSecs     := settings.Read(INI_AUTOCOLLAPSE, DEF_AUTOCOLLAPSE, 0, 3600);
-  FTaskbarIcon          := Trim(settings.Read(INI_TASKBAR_ICON, ''));
+  FLauncher.IconSpec          := Trim(settings.Read(INI_TASKBAR_ICON, ''));
   FAutoHide             := settings.Read(INI_AUTOHIDE, DEF_AUTOHIDE);
   FAutoHideTransparency := settings.Read(INI_AUTOHIDE_TRANSPARENCY, DEF_AUTOHIDE_TRANSPARENCY);
   FAutoShowDelay        := settings.Read(INI_AUTOSHOW_DELAY, DEF_AUTOSHOW_DELAY, 0, 60000);
@@ -1036,9 +917,9 @@ begin
   // Without the CPU/RAM widgets there is no ">>" button to expand again
   FCollapse.ManualCollapsed         := settings.Read(INI_COLLAPSED, DEF_COLLAPSED) and FSysWidgets.Enabled;
   FBarStyle          := settings.Read(INI_BAR_STYLE, DEF_BAR_STYLE, BAR_STYLE_NORMAL, BAR_STYLE_TASKBAR);
-  FZoomPercent          := settings.Read(INI_ZOOM, DEF_ZOOM, ZOOM_MIN, ZOOM_MAX);
-  FZoomCursor           := -1;
-  FDockPos             := settings.Read(INI_DOCK_POS, DEF_DOCK_POS, 0, 1000);
+  FZoom.Percent          := settings.Read(INI_ZOOM, DEF_ZOOM, ZOOM_MIN, ZOOM_MAX);
+  FZoom.Cursor           := -1;
+  FDock.Pos             := settings.Read(INI_DOCK_POS, DEF_DOCK_POS, 0, 1000);
   hki                   := settings.Read(INI_AUTOHIDE_HOTKEY, DEF_AUTOHIDE_HOTKEY);
   FIconSize             := settings.Read(INI_ICON_SIZE, DEF_ICON_SIZE, ICON_SIZE_MIN, ICON_SIZE_MAX);
   FIsLightStyle         := settings.Read(INI_ISLIGHT, DEF_ISLIGHT);
@@ -1071,7 +952,7 @@ begin
   FGripSize := GRIP_SIZE;
   FHotIndex := ITEM_NONE;
   FPressedIndex := ITEM_NONE;
-  FItemDropPosition := ITEM_NONE;
+  FDropTarget.Position := ITEM_NONE;
   FItemPopup := ITEM_NONE;
   FDragIndex := ITEM_NONE;
   FMouseLeftDown := False;
@@ -1128,18 +1009,7 @@ begin
       FSaveQueue.Save(WorkDir + LINKSLIST_FILE_NAME, sl.Text);
 
       // Items that stay visible when the bar is collapsed
-      sl.Clear;
-      for var item in Items
-      do if item.Pinned
-         then sl.Add(ExtractFileName(item.FileName));
-
-      if (sl.Count > 0)
-      then FSaveQueue.Save(WorkDir + PINNED_FILE_NAME, sl.Text)
-      else begin
-        FSaveQueue.Forget(WorkDir + PINNED_FILE_NAME);
-        if FileExists(WorkDir + PINNED_FILE_NAME)
-        then DeleteFile(WorkDir + PINNED_FILE_NAME);
-      end;
+      FPinned.Save(WorkDir, FSaveQueue);
     finally
       sl.Free;
     end;
@@ -1148,25 +1018,13 @@ end;
 
 procedure TLinkbarWcl.LoadPinned;
 begin
-  var sl := TStringList.Create;
-  try
-    sl.CaseSensitive := False;
-    if FileExists(WorkDir + PINNED_FILE_NAME)
-    then sl.LoadFromFile(WorkDir + PINNED_FILE_NAME, TEncoding.UTF8);
-
-    for var item in Items
-    do item.Pinned := (sl.IndexOf(ExtractFileName(item.FileName)) >= 0);
-  finally
-    sl.Free;
-  end;
+  FPinned.Load(WorkDir);
 end;
 
 { Length taken by the pinned items when the bar is collapsed }
 function TLinkbarWcl.PinnedLength(const AVertical: Boolean): Integer;
 begin
-  Result := Items.PinnedWidth;
-  if (Result > 0)
-  then Inc(Result, DockPad);
+  Result := FPinned.CollapsedLength;
 end;
 
 procedure TLinkbarWcl.SaveSettings;
@@ -1184,7 +1042,7 @@ begin
     settings.Write(INI_COLLAPSE_FULLSCREEN, FCollapse.OnFullscreen);
     settings.Write(INI_ANIMATE_COLLAPSE, FCollapse.AnimateEnabled);
     settings.Write(INI_AUTOCOLLAPSE, FCollapse.AutoSecs);
-    settings.Write(INI_TASKBAR_ICON, FTaskbarIcon);
+    settings.Write(INI_TASKBAR_ICON, FLauncher.IconSpec);
     settings.Write(INI_PROFILE, FProfiles.Current);
     settings.Write(INI_EDGE, Integer(Align));
     settings.Write(INI_AUTOHIDE, AutoHide);
@@ -1222,8 +1080,8 @@ begin
     settings.Write(INI_MODERN_STYLE, FModernStyle);
     settings.Write(INI_SYS_WIDGETS, FSysWidgets.Enabled);
     settings.Write(INI_BAR_STYLE, FBarStyle);
-    settings.Write(INI_ZOOM, FZoomPercent);
-    settings.Write(INI_DOCK_POS, FDockPos);
+    settings.Write(INI_ZOOM, FZoom.Percent);
+    settings.Write(INI_DOCK_POS, FDock.Pos);
     settings.Write(INI_COLLAPSED, FCollapse.ManualCollapsed);
     // Save
     settings.Close;
@@ -1256,6 +1114,13 @@ begin
   FCollapse := TBarCollapse.Create(Self);
   FFullscreen := TFullscreenWatcher.Create(Self, FCollapse);
   FThumbs := TThumbController.Create(Self);
+  FLauncher := TLauncherMode.Create(Self);
+  FPinned := TPinnedItems.Create(Self);
+  FZoom := TBarZoom.Create(Self);
+  FDock := TBarDock.Create(Self, FZoom);
+  FDropTarget := TBarDropTarget.Create(Self);
+  FPainter := TBarPainter.Create(Self, FDock, FZoom);
+  FActionEditor := TActionButtonEditor.Create(Self);
   FRunning := TRunningIndicator.Create(Self);
   FCreated := False;
   CreateBitmaps;
@@ -1393,6 +1258,13 @@ begin
   if (not FRemoved)
   then SaveLinks;
   FreeAndNil(FSaveQueue);
+  FreeAndNil(FActionEditor);
+  FreeAndNil(FPainter);
+  FreeAndNil(FDropTarget);
+  FreeAndNil(FDock);
+  FreeAndNil(FZoom);
+  FreeAndNil(FPinned);
+  FreeAndNil(FLauncher);
   FreeAndNil(FRunning);
   FreeAndNil(FThumbs);
   FreeAndNil(FFullscreen);
@@ -1406,14 +1278,12 @@ begin
   if Assigned(BitmapPanel) then BitmapPanel.Free;
   if Assigned(BitmapButton) then BitmapButton.Free;
   if Assigned(BitmapSelected) then BitmapSelected.Free;
-  if Assigned(BitmapDropPosition) then BitmapDropPosition.Free;
   if Assigned(Items) then Items.Free;
 end;
 
 procedure TLinkbarWcl.CreateBitmaps;
 begin
   BitmapSelected := THBitmap.Create(32);
-  BitmapDropPosition := THBitmap.Create(32);
   BitmapButton := THBitmap.Create(32);
   BitmapPanel := THBitmap.Create(32);
 end;
@@ -1614,10 +1484,7 @@ begin
   if IsDock and (Button = mbLeft)
      and (ssCtrl in Shift) and not (ssShift in Shift)
   then begin
-    FDockSliding := True;
-    FSlideMoved := False;
-    GetCursorPos(FSlideStartCursor);
-    FSlideStartPos := BoundsRect.TopLeft;
+    FDock.BeginSlide;
     SetCapture(Handle);
     ToolTip.Cancel;
     Exit;
@@ -1660,20 +1527,9 @@ var
 
 procedure TLinkbarWcl.FormMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Integer);
 begin
-  if FDockSliding
+  if FDock.Sliding
   then begin
-    var p: TPoint;
-    GetCursorPos(p);
-    if (not FSlideMoved)
-       and (Abs(p.X - FSlideStartCursor.X) + Abs(p.Y - FSlideStartCursor.Y) > PANEL_DRAG_THRESHOLD)
-    then begin
-      FSlideMoved := True;
-      if IsVertical(Align)
-      then Screen.Cursor := crSizeNS
-      else Screen.Cursor := crSizeWE;
-    end;
-    if FSlideMoved
-    then SlideDock(p);
+    FDock.Drag;
     Exit;
   end;
 
@@ -1684,7 +1540,7 @@ begin
   if FAutoHiden then Exit;
 
   if Self.IsDragDrop then Exit;
-  if FItemDropPosition <> ITEM_NONE then Exit;
+  if FDropTarget.Position <> ITEM_NONE then Exit;
 
   if not FMouseLeftDown then
   begin
@@ -1694,8 +1550,8 @@ begin
     if ZoomEnabled and (not FMouseDragLinkbar)
     then begin
       if IsVertical(Align)
-      then FZoomCursor := Y
-      else FZoomCursor := X;
+      then FZoom.Cursor := Y
+      else FZoom.Cursor := X;
       RedrawZoom;
     end;
   end;
@@ -1789,18 +1645,17 @@ begin
   end;
 
   // End of Ctrl+drag of the dock
-  if FDockSliding and (Button = mbLeft)
+  if FDock.Sliding and (Button = mbLeft)
   then begin
-    FDockSliding := False;
+    FDock.Sliding := False;
     ReleaseCapture;
     Screen.Cursor := crDefault;
-    if FSlideMoved
-    then SaveDockPos
+    if FDock.SlideMoved
+    then FDock.SavePos
     else if (ItemIndexByPoint(Point(X, Y)) = ITEM_NONE)
     then begin
       // Ctrl+click on an empty area: center the dock again
-      FDockPos := DEF_DOCK_POS;
-      TSettingsFile.Write(FSettingsFileName, INI_DOCK_POS, FDockPos);
+      FDock.ResetPos;
       oAppBar.AppBarPosChanged;
     end
     else DoClickItem(X, Y);
@@ -2024,27 +1879,6 @@ begin
   MapWindowPoints(Handle, HWND_DESKTOP, APt, 1);
 end;
 
-{ Small dot in the corner of the icons that stay visible when the bar is collapsed }
-procedure TLinkbarWcl.DrawPinnedMark(const ABitmap: THBitmap; const AItem: TItemBase; const ARect: TRect);
-var
-  gp: IGPGraphics;
-  brush: IGPBrush;
-  d: Integer;
-  color: Cardinal;
-begin
-  if (not AItem.Pinned) or IsCollapsed
-  then Exit;
-
-  d := Max(4, ScaleDimension(5));
-  color := SwapRedBlue(GetImmersiveColorFromName('ImmersiveSystemAccent'));
-  if ((color shr 24) = 0)
-  then color := color or $FF000000;
-
-  gp := TGPGraphics.Create(ABitmap.Dc);
-  brush := TGPSolidBrush.Create(color);
-  GPFillRoundRect(gp, brush, Bounds(ARect.Right - d - 2, ARect.Top + 2, d, d), d div 2);
-end;
-
 procedure TLinkbarWcl.SetAutoCollapseSecs(AValue: Integer);
 begin
   FCollapse.ChangeAutoSecs(AValue);
@@ -2104,73 +1938,26 @@ begin
 end;
 
 procedure TLinkbarWcl.imNewActionClick(Sender: TObject);
-var name: string;
-    data: TActionData;
-    fn: string;
-    n: Integer;
 begin
-  name := '';
-  data.Clear;
-  FLockAutoHide := True;
-  try
-    if not EditAction(name, data, True)
-    then Exit;
-  finally
-    FLockAutoHide := False;
-  end;
-  fn := WorkDir + name + ES_ACTION;
-  n := 2;
-  while FileExists(fn) do
-  begin
-    fn := WorkDir + name + ' ' + IntToStr(n) + ES_ACTION;
-    Inc(n);
-  end;
-  ForceDirectories(WorkDir);
-  SaveActionFile(fn, data); // the folder watcher adds it to the bar
+  FActionEditor.Add;
 end;
 
 procedure TLinkbarWcl.imEditActionClick(Sender: TObject);
-var item: TItemAction;
-    name, oldFile, newFile: string;
-    data: TActionData;
 begin
-  if not (IsItemIndex(FItemPopup) and (Items[FItemPopup] is TItemAction))
-  then Exit;
-  item := TItemAction(Items[FItemPopup]);
-  oldFile := item.FileName;
-  name := item.Caption;
-  data := item.Data;
-  FLockAutoHide := True;
-  try
-    if not EditAction(name, data, False)
-    then Exit;
-  finally
-    FLockAutoHide := False;
-  end;
-  SaveActionFile(oldFile, data);
-  newFile := ExtractFilePath(oldFile) + name + ES_ACTION;
-  if not SameText(newFile, oldFile) and not FileExists(newFile)
-     and RenameFile(oldFile, newFile)
-  then item.FileName := newFile;
-  // reload icon/data
-  item.NeedLoad := True;
-  tmrUpdate.Enabled := False;
-  tmrUpdate.Enabled := True;
+  if IsItemIndex(FItemPopup) and (Items[FItemPopup] is TItemAction)
+  then FActionEditor.Modify(TItemAction(Items[FItemPopup]));
 end;
 
 procedure TLinkbarWcl.imDeleteActionClick(Sender: TObject);
 begin
   if IsItemIndex(FItemPopup) and (Items[FItemPopup] is TItemAction)
-  then SHDeleteOp(Handle, Items[FItemPopup].FileName, True);
+  then FActionEditor.Remove(TItemAction(Items[FItemPopup]));
 end;
 
 procedure TLinkbarWcl.imPinnedClick(Sender: TObject);
 begin
-  if not IsItemIndex(FItemPopup)
-  then Exit;
-
-  Items[FItemPopup].Pinned := not Items[FItemPopup].Pinned;
-  ApplyPinned;
+  if IsItemIndex(FItemPopup)
+  then FPinned.Toggle(Items[FItemPopup]);
 end;
 
 { After changing the pinned flags: pinned items go to the end, save and re-layout }
@@ -2183,17 +1970,33 @@ end;
 
 procedure TLinkbarWcl.imPinAllActionsClick(Sender: TObject);
 begin
-  for var item in Items
-  do if (item is TItemAction)
-     then item.Pinned := True;
-  ApplyPinned;
+  FPinned.PinAllActions;
 end;
 
 procedure TLinkbarWcl.imUnpinAllClick(Sender: TObject);
 begin
-  for var item in Items
-  do item.Pinned := False;
+  FPinned.UnpinAll;
+end;
+
+procedure TLinkbarWcl.BarPinnedChanged;
+begin
   ApplyPinned;
+end;
+
+function TLinkbarWcl.BarDockPad: Integer;
+begin
+  Result := DockPad;
+end;
+
+procedure TLinkbarWcl.BarRescanSoon;
+begin
+  tmrUpdate.Enabled := False;
+  tmrUpdate.Enabled := True;
+end;
+
+function TLinkbarWcl.BarItems: TLBItemList;
+begin
+  Result := Items;
 end;
 
 { ---------- profiles ---------- }
@@ -2503,18 +2306,11 @@ End;
 
 procedure TLinkbarWcl.DoPopupMenu(APt: TPoint; AShift: Boolean);
 var
+  entries: TArray<TPopupEntry>;
+  entry: TPopupEntry;
   FPopupMenu: HMENU;
-  Flags: Integer;
-  mii: TMenuItemInfo;
-  mi: TMenuInfo;
-  iconsize: Integer;
-  icon: HICON;
-  bmp: HBITMAP;
+  hbrBg: HBRUSH;
 begin
-  FPopupMenu := CreatePopupMenu;
-  if (FPopupMenu = 0)
-  then Exit;
-
   BuildProfilesMenu;
   var isAction := IsItemIndex(FItemPopup) and (Items[FItemPopup] is TItemAction);
 
@@ -2531,7 +2327,6 @@ begin
   then imAutoCollapse.Caption := L10NFind('Menu.AutoCollapseOn', 'Turn off automatic collapse')
   else imAutoCollapse.Caption := Format(L10NFind('Menu.AutoCollapseOff', 'Collapse automatically after %d s without use'), [AUTOCOLLAPSE_DEFAULT_SECS]);
 
-  //for i := 0 to pMenu.Items.Count-1 do
   for var item: TMenuItem in pMenu.Items
   do begin
     if (AShift)
@@ -2581,69 +2376,16 @@ begin
       then Continue;
     end;
 
-    Flags := MF_BYCOMMAND;
-
-    if (item.IsLine)
-    then Flags := Flags or MF_SEPARATOR
-    else Flags := Flags or MF_STRING;
-
-    if (item = imPinned)
-       and IsItemIndex(FItemPopup) and Items[FItemPopup].Pinned
-    then Flags := Flags or MF_CHECKED;
-
-    if (item = imLockBar)
-       and (FLockLinkbar)
-    then Flags := Flags or MF_CHECKED;
-
-    if (item = imSortAlphabet)
-       and (FSortAlphabetically)
-    then Flags := Flags or MF_CHECKED;
-
-    if (item.Count = 0)
-    then begin
-      // Convertir a OwnerDraw
-      Flags := (Flags and not MF_STRING) or MF_OWNERDRAW;
-      AppendMenu(FPopupMenu, Flags, item.Command, PChar(item));
-    end
-    else begin
-      var subMenu := CreatePopupMenu;
-
-      for var subItem: TMenuItem in item
-      do begin
-        Flags := MF_BYCOMMAND or MF_OWNERDRAW;
-        if (subItem.IsLine)
-        then Flags := Flags or MF_SEPARATOR;
-        if subItem.Checked
-        then Flags := Flags or MF_CHECKED;
-        AppendMenu(subMenu, Flags, subItem.Command, PChar(subItem));
-      end;
-
-      Flags := MF_POPUP or MF_OWNERDRAW;
-      AppendMenu(FPopupMenu, Flags, subMenu, PChar(item));
-    end;
+    entry.Item := item;
+    entry.Checked := ((item = imPinned) and IsItemIndex(FItemPopup) and Items[FItemPopup].Pinned)
+                  or ((item = imLockBar) and FLockLinkbar)
+                  or ((item = imSortAlphabet) and FSortAlphabetically);
+    entries := entries + [entry];
   end;
 
-  // [OWNERDRAW] Se omiten los íconos nativos de Windows porque el dibujado Sci-Fi
-  // es manual y los íconos nativos (MIIM_BITMAP) rompen la selección y los colores oscuros.
-  
-  mi := Default(TMenuInfo);
-  mi.cbSize := SizeOf(TMenuInfo);
-  mi.fMask := MIM_STYLE or MIM_BACKGROUND;
-  mi.dwStyle := MNS_NOCHECK; // Quita el marco/columna izquierda de iconos de Windows clásico
-
-  // Creamos el brush para el marco exterior/fondo
-  var hbrBg := CreateSolidBrush(RGB(10, 20, 35)); // Azul muy oscuro Sci-Fi
-  mi.hbrBack := hbrBg;
-  SetMenuInfo(FPopupMenu, mi);
-
-  // Los submenús (ej. Perfil, Nuevo) también necesitan el fondo oscuro y sin columna de checks;
-  // si no, se ve el fondo claro por defecto entre los ítems.
-  for var si := 0 to GetMenuItemCount(FPopupMenu) - 1
-  do begin
-    var hSub := GetSubMenu(FPopupMenu, si);
-    if (hSub <> 0)
-    then SetMenuInfo(hSub, mi);
-  end;
+  FPopupMenu := TSciFiMenu.Build(entries, hbrBg);
+  if (FPopupMenu = 0)
+  then Exit;
 
   MapWindowPoints(Handle, HWND_DESKTOP, APt, 1);
 
@@ -2673,117 +2415,18 @@ begin
     end;
     FLockAutoHide := False;
   end;
-
-  DeleteObject(bmp);
 end;
 
 procedure TLinkbarWcl.WMMeasureItem(var Message: TWMMeasureItem);
-var
-  str: string;
-  size: TSize;
-  dc: HDC;
-  fnt0: HGDIOBJ;
-  item: TMenuItem;
 begin
-  if Message.MeasureItemStruct^.CtlType = ODT_MENU then
-  begin
-    item := TMenuItem(Message.MeasureItemStruct^.itemData);
-    if item = nil then Exit;
-    if item.IsLine then
-    begin
-      Message.MeasureItemStruct^.itemWidth := 10;
-      Message.MeasureItemStruct^.itemHeight := 12;
-    end
-    else
-    begin
-      dc := GetDC(Handle);
-      fnt0 := SelectObject(dc, Screen.IconFont.Handle);
-      str := item.Caption;
-      str := StringReplace(str, '&', '', [rfReplaceAll]);
-      GetTextExtentPoint32(dc, PChar(str), Length(str), size);
-      SelectObject(dc, fnt0);
-      ReleaseDC(Handle, dc);
-      Message.MeasureItemStruct^.itemWidth := size.cx + 50; // Margen
-      Message.MeasureItemStruct^.itemHeight := 28;
-    end;
-  end else
-    inherited;
+  if not TSciFiMenu.Measure(Handle, Message)
+  then inherited;
 end;
 
 procedure TLinkbarWcl.WMDrawItem(var Message: TWMDrawItem);
-var
-  dc: HDC;
-  r, tr: TRect;
-  item: TMenuItem;
-  gp: TGPGraphics;
-  brushFill, brushSel: TGPSolidBrush;
-  str: string;
-  fnt0: HGDIOBJ;
 begin
-  if Message.DrawItemStruct^.CtlType = ODT_MENU then
-  begin
-    item := TMenuItem(Message.DrawItemStruct^.itemData);
-    if item = nil then Exit;
-    dc := Message.DrawItemStruct^.hDC;
-    r := Message.DrawItemStruct^.rcItem;
-    
-    gp := TGPGraphics.Create(dc);
-    
-    // Fondo general gris muy oscuro
-    brushFill := TGPSolidBrush.Create($FF101010);
-    GPFillRoundRect(gp, brushFill, r, 0);
-    brushFill := nil;
-    
-    // Selección en azul translúcido
-    if (Message.DrawItemStruct^.itemState and ODS_SELECTED) <> 0 then
-    begin
-      brushSel := TGPSolidBrush.Create($3300AAFF);
-      tr := r;
-      InflateRect(tr, -2, -2);
-      GPFillRoundRect(gp, brushSel, tr, 4);
-      brushSel := nil;
-    end;
-    
-    if item.IsLine then
-    begin
-      brushFill := TGPSolidBrush.Create($FF333333);
-      tr := r;
-      tr.Top := r.Top + r.Height div 2;
-      tr.Bottom := tr.Top + 1;
-      tr.Left := tr.Left + 8;
-      tr.Right := tr.Right - 8;
-      GPFillRoundRect(gp, brushFill, tr, 0);
-      brushFill := nil;
-    end
-    else
-    begin
-      str := item.Caption;
-      str := StringReplace(str, '&', '', [rfReplaceAll]);
-      
-      fnt0 := SelectObject(dc, Screen.IconFont.Handle);
-      SetBkMode(dc, TRANSPARENT);
-      if (Message.DrawItemStruct^.itemState and ODS_SELECTED) <> 0 then
-        SetTextColor(dc, RGB(0, 200, 255)) // Azul Sci-Fi
-      else if item.Enabled then
-        SetTextColor(dc, RGB(140, 165, 180)) // Celeste agrisado tenue (menor contraste)
-      else
-        SetTextColor(dc, RGB(70, 80, 90));
-
-      r.Left := r.Left + 20;
-      DrawText(dc, PChar(str), Length(str), r, DT_SINGLELINE or DT_VCENTER);
-      
-      if item.Count > 0 then
-      begin
-        r.Left := Message.DrawItemStruct^.rcItem.Right - 20;
-        DrawText(dc, PChar('>'), 1, r, DT_SINGLELINE or DT_VCENTER);
-      end;
-      
-      SelectObject(dc, fnt0);
-    end;
-    
-    gp := nil;
-  end else
-    inherited;
+  if not TSciFiMenu.Draw(Message)
+  then inherited;
 end;
 
 procedure TLinkbarWcl.WMInitMenuPopup(var Message: TWMInitMenuPopup);
@@ -3152,7 +2795,7 @@ begin
   x := AX; y := AY; w := AWidth; h := AHeight;
   // Dock mode: small floating bar centered on the edge
   if IsDock
-  then DockBounds(x, y, w, h);
+  then FDock.CalcBounds(x, y, w, h);
 
   // Animation start: only render the expanded bitmap, the window is not changed
   if FCollapse.AnimBuild
@@ -3805,7 +3448,7 @@ var
 begin
   GetCursorPos(pt);
   Result := FAutoHiden or FFullscreen.HiddenByFullscreen
-         or FLockAutoHide or FLockHotIndex or FMouseLeftDown or FDockSliding
+         or FLockAutoHide or FLockHotIndex or FMouseLeftDown or FDock.Sliding
          or PtInRect(BoundsRect, pt);
 end;
 
@@ -3910,9 +3553,9 @@ procedure TLinkbarWcl.FormMouseLeave(Sender: TObject);
 begin
   FCollapse.ArmAuto;
   HotIndex := -1;
-  if ZoomEnabled and (FZoomCursor >= 0)
+  if ZoomEnabled and (FZoom.Cursor >= 0)
   then begin
-    FZoomCursor := -1;
+    FZoom.Cursor := -1;
     RedrawZoom;
   end;
   if (FAutoShowMode = EAutoShowModeMouseHover) or FCanAutoHide
@@ -3923,116 +3566,46 @@ end;
 // Drag&Drop
 ////////////////////////////////////////////////////////////////////////////////
 
-var _FLastDropRect: TRect;
-    _FPart: Integer;
-
 procedure TLinkbarWcl.SetDropPosition(AValue: TPoint);
-
-  function GetItemDropRect(const AIndex, APart: Integer): TRect;
-  var r: TRect;
-  begin
-    r := Items[AIndex].Rect;
-
-    case APart of
-      -1: begin
-        if IsVertical(Align)
-        then begin
-          r.Top := r.Top - DROP_INDICATOR_SIZE div 2;
-          r.Left := r.Left + r.Width div DROP_INDICATOR_PADDING_DIV;
-          r.Right := r.Right - r.Width div DROP_INDICATOR_PADDING_DIV;
-          r.Height := DROP_INDICATOR_SIZE;
-        end
-        else begin
-          r.Left := r.Left - DROP_INDICATOR_SIZE div 2;
-          r.Top := r.Top + r.Height div DROP_INDICATOR_PADDING_DIV;
-          r.Bottom := r.Bottom - r.Height div DROP_INDICATOR_PADDING_DIV;
-          r.Width := DROP_INDICATOR_SIZE;
-        end;
-      end;
-      1: begin
-        if IsVertical(Align)
-        then begin
-          r.Top := r.Bottom - DROP_INDICATOR_SIZE div 2;
-          r.Left := r.Left + r.Width div DROP_INDICATOR_PADDING_DIV;
-          r.Right := r.Right - r.Width div DROP_INDICATOR_PADDING_DIV;
-          r.Height := DROP_INDICATOR_SIZE;
-        end
-        else begin
-          r.Left := r.Right - DROP_INDICATOR_SIZE div 2;
-          r.Top := r.Top + r.Height div DROP_INDICATOR_PADDING_DIV;
-          r.Bottom := r.Bottom - r.Height div DROP_INDICATOR_PADDING_DIV;
-          r.Width := DROP_INDICATOR_SIZE;
-        end;
-      end;
-    end;
-
-    Result := r;
-  end;
-
-var
-  r: TRect;
-  index: Integer;
-  part: Integer;
 begin
-  index := ItemIndexByPoint(AValue);
+  if Assigned(FDropTarget)
+  then FDropTarget.Update(AValue);
+end;
 
-  if (index = ITEM_NONE)
-  then part := -1
-  else begin
-    var bSideOnly: Boolean := FDragingItem;
-    if bSideOnly and (Items[index] is TItemGroup) then
-      bSideOnly := False;
-      
-    part := Items[index].GetDropPart(AValue, IsVertical(Align), bSideOnly);
+function TLinkbarWcl.BarItemAt(const APt: TPoint): Integer;
+begin
+  Result := ItemIndexByPoint(APt);
+end;
 
-    if (part = 1) and (index <> FDragIndex)
-    then begin
-      index := index + 1;
-      part := -1;
-    end;
+function TLinkbarWcl.BarDraggingItem: Boolean;
+begin
+  Result := FDragingItem;
+end;
 
-    if index > (Items.Count-1)
-    then index := ITEM_NONE;
-  end;
+function TLinkbarWcl.BarDragIndex: Integer;
+begin
+  Result := FDragIndex;
+end;
 
-  if (index = ITEM_NONE) or (part <> 0)
-  then FPidl := WorkDirPidl
-  else FPidl := Items[index].Pidl;
+function TLinkbarWcl.BarPanelBitmap: THBitmap;
+begin
+  Result := BitmapPanel;
+end;
 
-  if (index = FItemDropPosition) and (part = _FPart) then Exit;
-  _FPart := part;
+function TLinkbarWcl.BarWorkDirPidl: PItemIDList;
+begin
+  Result := WorkDirPidl;
+end;
 
-  if (FItemDropPosition <> ITEM_NONE) then
-  begin
-    r := _FLastDropRect;
-    BitBlt(BitmapPanel.Dc, r.Left, r.Top, r.Width, r.Height, BitmapDropPosition.Dc, 0, 0, SRCCOPY);
-  end;
+procedure TLinkbarWcl.BarPaintDropHighlight(const AIndex: Integer; const ARect: TRect);
+begin
+  DrawBackground(BitmapPanel, ARect);
+  ThemeDrawHover(BitmapPanel, Align, ARect);
+  DrawItem(BitmapPanel, AIndex, False, False, False);
+end;
 
-  FItemDropPosition := index;
-
-  if (FItemDropPosition <> ITEM_NONE) then
-  begin
-    r := GetItemDropRect(FItemDropPosition, part);
-    _FLastDropRect := r;
-
-    BitBlt(BitmapDropPosition.Dc, 0, 0, r.Width, r.Height, BitmapPanel.Dc, r.Left, r.Top, SRCCOPY);
-
-    if (part = 0)
-    then begin
-      DrawBackground(BitmapPanel, r);
-      ThemeDrawHover(BitmapPanel, Align, r);
-      DrawItem(BitmapPanel, FItemDropPosition, False, False, False);
-    end
-    else begin
-      var gpDrawer: IGPGraphics := TGpGraphics.Create(BitmapPanel.Dc);
-      var gpBrush: IGPSolidBrush := TGPSolidBrush.Create(TGPColor.Create($ff000000));
-      gpDrawer.FillRectangle(gpBrush, TGPRect.Create(r));
-      gpBrush.Color := TGPColor.Create($ffffffff);
-      r.Inflate(-1,-1,-1,-1);
-      gpDrawer.FillRectangle(gpBrush, TGPRect.Create(r));
-    end;
-  end;
-
+procedure TLinkbarWcl.BarRefresh;
+begin
   UpdateWindow;
 end;
 
@@ -4052,7 +3625,7 @@ begin
      and FAutoHiden
   then Exit;
   SetDropPosition(pt);
-  ppidl := FPidl;
+  ppidl := FDropTarget.Pidl;
 end;
 
 procedure TLinkbarWcl.DoDragLeave;
@@ -4076,31 +3649,31 @@ begin
   then begin
     // Dropped on the center of a group: move the item (shortcut, action...) inside the group folder.
     // The shell does not do it: drops that start in the bar itself are not forwarded to the target.
-    if (_FPart = 0)
+    if (FDropTarget.Part = 0)
        and IsItemIndex(FDragIndex)
-       and IsItemIndex(FItemDropPosition)
-       and (FItemDropPosition <> FDragIndex)
-       and (Items[FItemDropPosition] is TItemGroup)
+       and IsItemIndex(FDropTarget.Position)
+       and (FDropTarget.Position <> FDragIndex)
+       and (Items[FDropTarget.Position] is TItemGroup)
        and (not Items.IsSeparator(Items[FDragIndex]))
     then begin
       var srcFile := ExcludeTrailingPathDelimiter(Items[FDragIndex].FileName);
-      var dstFile := IncludeTrailingPathDelimiter(Items[FItemDropPosition].FileName) + ExtractFileName(srcFile);
+      var dstFile := IncludeTrailingPathDelimiter(Items[FDropTarget.Position].FileName) + ExtractFileName(srcFile);
       if not (FileExists(dstFile) or DirectoryExists(dstFile))
       then begin
         if MoveFile(PChar(srcFile), PChar(dstFile))
         then begin
           // Reload the group icon (mini icons of its members), same as GroupChanged
-          Items[FItemDropPosition].NeedLoad := True;
+          Items[FDropTarget.Position].NeedLoad := True;
           tmrUpdate.Enabled := False;
           tmrUpdate.Enabled := True;
         end;
       end;
     end;
 
-    if _FPart <> 0 then
+    if FDropTarget.Part <> 0 then
     begin
       SortAlphabetically := False;
-      if (FItemDropPosition = ITEM_NONE)
+      if (FDropTarget.Position = ITEM_NONE)
       then begin
         if (Items.Count > 0)
            and ((Items.First.Rect.TopLeft.X < pt.X) or (Items.First.Rect.TopLeft.Y < pt.Y))
@@ -4108,9 +3681,9 @@ begin
         else Items.Move(FDragIndex, Items.Count-1);
       end
       else begin
-        if (FItemDropPosition <= FDragIndex)
-        then Items.Move(FDragIndex, FItemDropPosition)
-        else Items.Move(FDragIndex, FItemDropPosition-1);
+        if (FDropTarget.Position <= FDragIndex)
+        then Items.Move(FDragIndex, FDropTarget.Position)
+        else Items.Move(FDragIndex, FDropTarget.Position-1);
       end;
     end;
     Items.PinnedToEnd;
@@ -4123,10 +3696,7 @@ end;
 
 procedure TLinkbarWcl.QueryDragImage(out ABitmap: THBitmap; out AOffset: TPoint);
 var ItemRect: TRect;
-    srcDc: HDC;
-    old: HGDIOBJ;
     bm: Winapi.Windows.TBitmap;
-    blend: TBlendFunction;
 begin
   if (not StyleServices.Enabled)
   then begin
@@ -4143,18 +3713,7 @@ begin
        or (GetObject(FExtDragIcon, SizeOf(bm), @bm) = 0)
     then Exit;
 
-    ABitmap := THBitmap.Create(32);
-    ABitmap.SetSize(FExtDragIconSize, FExtDragIconSize);
-    blend.BlendOp := AC_SRC_OVER;
-    blend.BlendFlags := 0;
-    blend.SourceConstantAlpha := 255;
-    blend.AlphaFormat := AC_SRC_ALPHA;
-    srcDc := CreateCompatibleDC(0);
-    old := SelectObject(srcDc, FExtDragIcon);
-    Winapi.Windows.AlphaBlend(ABitmap.Dc, 0, 0, FExtDragIconSize, FExtDragIconSize,
-      srcDc, 0, 0, bm.bmWidth, Abs(bm.bmHeight), blend);
-    SelectObject(srcDc, old);
-    DeleteDC(srcDc);
+    ABitmap := TBarDropTarget.CreateExternalImage(FExtDragIcon, FExtDragIconSize);
     AOffset := Point(FExtDragIconSize div 2, FExtDragIconSize div 2);
     Exit;
   end;
@@ -4201,9 +3760,9 @@ begin
     item.Hash := StrToHash(AFileName);
     item.FileName := WorkDir + AFileName;
     item.NeedLoad := True;
-    if (FItemDropPosition = ITEM_NONE)
+    if (FDropTarget.Position = ITEM_NONE)
     then Items.Add(item)
-    else Items.Insert(FItemDropPosition, item);
+    else Items.Insert(FDropTarget.Position, item);
   end;
   waRemoved:
   begin
@@ -4446,82 +4005,35 @@ end;
 
 function TLinkbarWcl.ZoomEnabled: Boolean;
 begin
-  Result := (FZoomPercent > 100);
+  Result := Assigned(FZoom) and FZoom.Enabled;
 end;
 
 { Extra thickness so magnified icons fit in the bar }
 function TLinkbarWcl.ZoomRoom: Integer;
 begin
-  if ZoomEnabled
-  then Result := MulDiv(IconSize, FZoomPercent - 100, 100)
+  if Assigned(FZoom)
+  then Result := FZoom.Room
   else Result := 0;
 end;
 
 function TLinkbarWcl.ZoomIconSizeValue: Integer;
 begin
-  if ZoomEnabled
-  then Result := MulDiv(IconSize, FZoomPercent, 100)
+  if Assigned(FZoom)
+  then Result := FZoom.IconSizeValue
   else Result := 0;
 end;
 
 { Dock: free space at both ends so magnified end icons are not cut }
 function TLinkbarWcl.DockPad: Integer;
 begin
-  if not IsDock
-  then Exit(0);
-  if ZoomEnabled
-  then Result := MulDiv(Max(ButtonSize.cx, ButtonSize.cy), FZoomPercent - 100, 100)
-  else Result := ScaleDimension(4);
+  if Assigned(FDock)
+  then Result := FDock.Pad
+  else Result := 0;
 end;
 
 function TLinkbarWcl.ItemsMargin: Integer;
 begin
   Result := FGripSize + DockPad;
-end;
-
-{ Dock bounds: only as long as its content, centered, slightly away from the edge }
-procedure TLinkbarWcl.DockBounds(var AX, AY, AWidth, AHeight: Integer);
-var
-  wa: TRect;
-  len, len_exp, gap, mon: Integer;
-  vertical: Boolean;
-begin
-  mon := EnsureRange(FMonitorNum, 0, Screen.MonitorCount - 1);
-  wa := Screen.Monitors[mon].WorkareaRect;
-  gap := ScaleDimension(6);
-  vertical := IsVertical(Align);
-
-  len_exp := Items.LineWidth + 2 * ItemsMargin + FSysWidgets.ReservedLength(vertical);
-  if IsCollapsed then
-    len := ItemsMargin + PinnedLength(vertical) + FSysWidgets.ReservedLength(vertical)
-  else
-    len := len_exp;
-
-  if vertical
-  then begin
-    len_exp := Min(len_exp, wa.Height);
-    len := Min(len, wa.Height);
-    AHeight := len;
-    AY := wa.Top + MulDiv(wa.Height - len_exp, FDockPos, 1000);
-    if IsCollapsed then
-      AY := AY + (len_exp - len);
-      
-    if (Align = EPanelAlignLeft)
-    then AX := wa.Left + gap
-    else AX := wa.Right - AWidth - gap;
-  end
-  else begin
-    len_exp := Min(len_exp, wa.Width);
-    len := Min(len, wa.Width);
-    AWidth := len;
-    AX := wa.Left + MulDiv(wa.Width - len_exp, FDockPos, 1000);
-    if IsCollapsed then
-      AX := AX + (len_exp - len);
-      
-    if (Align = EPanelAlignTop)
-    then AY := wa.Top + gap
-    else AY := wa.Bottom - AHeight - gap;
-  end;
 end;
 
 { Rounded corners for the dock, plain rectangle otherwise }
@@ -4550,137 +4062,40 @@ begin
   end;
 end;
 
-{ Dock background: rounded rectangle with anti-aliased edges and a thin
-  border, written directly as premultiplied pixels (correct alpha) }
-procedure TLinkbarWcl.DrawDockBackground(const ABitmap: THBitmap; const AClipRect: TRect);
-
-  // 0..1 coverage of pixel center (fx, fy) by a rounded rect
-  function Coverage(fx, fy: Double; const R: TRect; Radius: Double): Double;
-  var dx, dy: Double;
-  begin
-    if (fx < R.Left) or (fx > R.Right) or (fy < R.Top) or (fy > R.Bottom)
-    then begin
-      // outside the box: soft edge of half a pixel
-      dx := Max(Max(R.Left - fx, fx - R.Right), 0);
-      dy := Max(Max(R.Top - fy, fy - R.Bottom), 0);
-      Exit(EnsureRange(0.5 - Sqrt(dx*dx + dy*dy), 0, 1));
-    end;
-    dx := 0;
-    if (fx < R.Left + Radius) then dx := R.Left + Radius - fx
-    else if (fx > R.Right - Radius) then dx := fx - (R.Right - Radius);
-    dy := 0;
-    if (fy < R.Top + Radius) then dy := R.Top + Radius - fy
-    else if (fy > R.Bottom - Radius) then dy := fy - (R.Bottom - Radius);
-    if (dx = 0) or (dy = 0)
-    then begin
-      // straight edges: distance to the nearest side
-      Result := EnsureRange(Min(Min(fx - R.Left, R.Right - fx), Min(fy - R.Top, R.Bottom - fy)) + 0.5, 0, 1);
-    end
-    else Result := EnsureRange(Radius - Sqrt(dx*dx + dy*dy) + 0.5, 0, 1);
-  end;
-
-var
-  color, a, ba, br, bg, bb, cr, cg, cb: Cardinal;
-  outer, inner, clip: TRect;
-  radius, covO, covI, fa, fb: Double;
-  x, y: Integer;
-  row: PByte;
-  px: PCardinal;
-  oa, orr, og, ob: Double;
+function TLinkbarWcl.BarIsDock: Boolean;
 begin
-  if (ABitmap.Bits = nil)
-  then Exit;
-
-  // fill color (ARGB); opaque mode = fully opaque
-  color := BackgroundColor;
-  a := color shr 24;
-  if (FTransparencyMode = tmOpaque) then a := 255;
-  if (a < 8) then a := 8; // keep it clickable
-  cr := (color shr 16) and $FF;
-  cg := (color shr 8) and $FF;
-  cb := color and $FF;
-
-  // thin border: light on dark, dark on light
-  if (GlobalLook = ELookLight)
-  then begin ba := 50; br := 0; bg := 0; bb := 0; end
-  else begin ba := 60; br := 255; bg := 255; bb := 255; end;
-
-  outer := Rect(0, 0, ABitmap.Width, ABitmap.Height);
-  inner := Rect(1, 1, ABitmap.Width - 1, ABitmap.Height - 1);
-  radius := Min(ScaleDimension(14), Min(ABitmap.Width, ABitmap.Height) div 2);
-
-  clip := AClipRect;
-  if not clip.IntersectsWith(outer) then Exit;
-  clip.Intersect(outer);
-
-  for y := clip.Top to clip.Bottom - 1 do
-  begin
-    row := PByte(ABitmap.Bits) + y * ABitmap.Pitch;
-    for x := clip.Left to clip.Right - 1 do
-    begin
-      px := PCardinal(row + x * 4);
-      covO := Coverage(x + 0.5, y + 0.5, outer, radius);
-      covI := Coverage(x + 0.5, y + 0.5, inner, Max(radius - 1, 0));
-      fa := (a / 255) * covI;          // fill alpha
-      fb := (ba / 255) * Max(covO - covI, 0); // border alpha
-      // composite border over fill (premultiplied)
-      oa := fb + fa * (1 - fb);
-      orr := br * fb + cr * fa * (1 - fb);
-      og := bg * fb + cg * fa * (1 - fb);
-      ob := bb * fb + cb * fa * (1 - fb);
-      px^ := (Cardinal(Round(oa * 255)) shl 24)
-          or (Cardinal(Round(orr)) shl 16)
-          or (Cardinal(Round(og)) shl 8)
-          or  Cardinal(Round(ob));
-    end;
-  end;
+  Result := IsDock;
 end;
 
-{ Move the dock along its edge following the mouse (Ctrl+drag) }
-procedure TLinkbarWcl.SlideDock(const ACursor: TPoint);
-var
-  wa: TRect;
-  l, t: Integer;
+function TLinkbarWcl.BarExpandedLength(const AVertical: Boolean): Integer;
 begin
-  wa := Screen.Monitors[EnsureRange(FMonitorNum, 0, Screen.MonitorCount - 1)].WorkareaRect;
-  l := FSlideStartPos.X;
-  t := FSlideStartPos.Y;
-  if IsVertical(Align)
-  then t := EnsureRange(t + ACursor.Y - FSlideStartCursor.Y, wa.Top, Max(wa.Top, wa.Bottom - Height))
-  else l := EnsureRange(l + ACursor.X - FSlideStartCursor.X, wa.Left, Max(wa.Left, wa.Right - Width));
-  SetWindowPos(Handle, 0, l, t, 0, 0, SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE);
-  FBeforeAutoHideBound := Bounds(l, t, Width, Height);
+  Result := Items.LineWidth + 2 * ItemsMargin + FSysWidgets.ReservedLength(AVertical);
 end;
 
-{ Remember the dock position as a fraction of the free space (survives resolution changes) }
-procedure TLinkbarWcl.SaveDockPos;
-var
-  wa: TRect;
-  range, pos, len_exp: Integer;
-  vertical: Boolean;
+function TLinkbarWcl.BarBackgroundColor: Cardinal;
 begin
-  vertical := IsVertical(Align);
-  len_exp := Items.LineWidth + 2 * ItemsMargin + FSysWidgets.ReservedLength(vertical);
-  wa := Screen.Monitors[EnsureRange(FMonitorNum, 0, Screen.MonitorCount - 1)].WorkareaRect;
-  
-  if vertical
-  then begin
-    len_exp := Min(len_exp, wa.Height);
-    range := wa.Height - len_exp;
-    pos := Top - wa.Top;
-    if IsCollapsed then pos := pos - (len_exp - Height);
-  end
-  else begin
-    len_exp := Min(len_exp, wa.Width);
-    range := wa.Width - len_exp;
-    pos := Left - wa.Left;
-    if IsCollapsed then pos := pos - (len_exp - Width);
-  end;
-  
-  if (range > 0)
-  then FDockPos := EnsureRange(MulDiv(pos, 1000, range), 0, 1000)
-  else FDockPos := DEF_DOCK_POS;
-  TSettingsFile.Write(FSettingsFileName, INI_DOCK_POS, FDockPos);
+  Result := BackgroundColor;
+end;
+
+function TLinkbarWcl.BarOpaque: Boolean;
+begin
+  Result := (FTransparencyMode = tmOpaque);
+end;
+
+function TLinkbarWcl.BarWorkArea: TRect;
+begin
+  Result := Screen.Monitors[EnsureRange(FMonitorNum, 0, Screen.MonitorCount - 1)].WorkareaRect;
+end;
+
+function TLinkbarWcl.BarBounds: TRect;
+begin
+  Result := BoundsRect;
+end;
+
+procedure TLinkbarWcl.BarMoveTo(const AX, AY: Integer);
+begin
+  SetWindowPos(Handle, 0, AX, AY, 0, 0, SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE);
+  FBeforeAutoHideBound := Bounds(AX, AY, Width, Height);
 end;
 
 procedure TLinkbarWcl.SetBarStyle(AValue: Integer);
@@ -4715,90 +4130,80 @@ end;
 { Show the bar or only its taskbar button, depending on the style }
 procedure TLinkbarWcl.ApplyTaskbarMode;
 begin
-  if IsTaskbarIcon
+  if Assigned(FLauncher)
+  then FLauncher.Apply(IsTaskbarIcon);
+end;
+
+procedure TLinkbarWcl.UpdateTaskbarIcon;
+begin
+  if Assigned(FLauncher)
+  then FLauncher.UpdateIcon;
+end;
+
+procedure TLinkbarWcl.SetTaskbarIcon(const AValue: string);
+begin
+  FLauncher.ChangeIcon(AValue);
+end;
+
+function TLinkbarWcl.GetTaskbarIcon: string;
+begin
+  Result := FLauncher.IconSpec;
+end;
+
+function TLinkbarWcl.BarPanelName: string;
+begin
+  Result := PanelName;
+end;
+
+function TLinkbarWcl.BarSettingsFile: string;
+begin
+  Result := FSettingsFileName;
+end;
+
+function TLinkbarWcl.BarWorkDir: string;
+begin
+  Result := WorkDir;
+end;
+
+procedure TLinkbarWcl.BarHideForLauncher;
+begin
+  CloseThumbs;
+  ToolTip.Cancel;
+  ShowWindow(Handle, SW_HIDE);
+end;
+
+procedure TLinkbarWcl.BarRestoreFromLauncher;
+begin
+  if not IsWindowVisible(Handle) and not FFullscreen.HiddenByFullscreen
   then begin
-    if not Assigned(FTaskbarButton)
-    then begin
-      var btn := TTaskbarButton.CreateButton(Self, PanelName);
-      btn.OnClick := TaskbarButtonClick;
-      btn.OnCloseRequest := TaskbarButtonClose;
-      // Each bar is its own taskbar app: not grouped with the other bars
-      btn.SetAppId('Arlarach.Linkbar.' + IntToHex(StrToHash(AnsiLowerCase(FSettingsFileName)), 8));
-      FTaskbarButton := btn;
-    end;
-    UpdateTaskbarIcon;
-    CloseThumbs;
-    ToolTip.Cancel;
-    ShowWindow(Handle, SW_HIDE);
-    TTaskbarButton(FTaskbarButton).ShowButton;
-  end
-  else begin
-    if Assigned(FTaskbarButton)
-    then begin
-      TTaskbarButton(FTaskbarButton).HideButton;
-      FreeAndNil(FTaskbarButton);
-    end;
-    if not IsWindowVisible(Handle) and not FFullscreen.HiddenByFullscreen
-    then begin
-      ShowWindow(Handle, SW_SHOWNA);
-      oAppBar.AppBarPosChanged;
-    end;
+    ShowWindow(Handle, SW_SHOWNA);
+    oAppBar.AppBarPosChanged;
   end;
 end;
 
-{ Click on the taskbar button: the bar's content as a popup above the taskbar }
-procedure TLinkbarWcl.TaskbarButtonClick(Sender: TObject);
-var r: TRect;
-    edge: UINT;
-    al: TPanelAlign;
+function TLinkbarWcl.BarActionTarget: HWND;
 begin
-  // The popup closes when the button is pressed: that click only closes it
-  if FLauncherOpen or (GetTickCount - FLauncherClosedAt < 400)
-  then Exit;
-
-  GetTaskbarAnchor(r, edge);
-  case edge of
-    ABE_TOP:   al := EPanelAlignTop;
-    ABE_LEFT:  al := EPanelAlignLeft;
-    ABE_RIGHT: al := EPanelAlignRight;
-    else       al := EPanelAlignBottom;
-  end;
-
-  var form := TFormGroup.CreateGroup(Self, Handle, ExcludeTrailingPathDelimiter(WorkDir),
-    PanelName, EnsureRange(IconSize, 32, 64));
-  form.RootLocked := True;
-  // Action buttons of the popup send their keys to the window that was in front
-  var target := GetForegroundWindow;
-  if TFullscreenWatcher.IsOurWindow(target) or TFullscreenWatcher.IsShellUiWindow(target)
-  then target := FFullscreen.LastForeignWnd;
-  if TFullscreenWatcher.IsOurWindow(target) then target := 0;
-  form.ActionTarget := target;
-  form.OnRootMenu := LauncherRootMenu;
-  form.OnDestroy := LauncherPopupDestroy;
-  form.OnGroupChanged := LauncherChanged;
-  // The bar is hidden: its CPU/RAM widgets go to the popup
-  if FSysWidgets.Enabled
-  then form.EnableSysStats(LauncherSysStats);
-  FLauncherOpen := True;
-  form.PopupAt(r, al);
-  // The popup closes when it loses the focus, so it must get it
-  if (GetForegroundWindow <> form.Handle)
-  then SetForegroundWindowInternal(form.Handle);
+  Result := GetForegroundWindow;
+  if TFullscreenWatcher.IsOurWindow(Result) or TFullscreenWatcher.IsShellUiWindow(Result)
+  then Result := FFullscreen.LastForeignWnd;
+  if TFullscreenWatcher.IsOurWindow(Result)
+  then Result := 0;
 end;
 
-procedure TLinkbarWcl.LauncherPopupDestroy(Sender: TObject);
+function TLinkbarWcl.BarSysStatsEnabled: Boolean;
 begin
-  FLauncherOpen := False;
-  FLauncherClosedAt := GetTickCount;
+  Result := FSysWidgets.Enabled;
 end;
 
-procedure TLinkbarWcl.TaskbarButtonClose(Sender: TObject);
+procedure TLinkbarWcl.BarSysStats(out ACpu, ARam: Integer);
 begin
-  imCloseClick(Sender);
+  // the widgets timer keeps sampling while the bar is hidden
+  ACpu := FSysWidgets.CpuLoad;
+  ARam := FSysWidgets.RamLoad;
 end;
 
 { Extra items in the popup menu: settings and back to a normal bar }
-procedure TLinkbarWcl.LauncherRootMenu(AMenu: TPopupMenu);
+procedure TLinkbarWcl.BarFillLauncherMenu(AMenu: TPopupMenu);
 var mi: TMenuItem;
 begin
   mi := TMenuItem.Create(AMenu);
@@ -4811,45 +4216,14 @@ begin
   AMenu.Items.Add(mi);
 end;
 
-{ Something changed in the popup (color, sub-groups): refresh the button icon }
-procedure TLinkbarWcl.LauncherChanged(Sender: TObject);
+procedure TLinkbarWcl.BarCloseRequested(Sender: TObject);
 begin
-  UpdateTaskbarIcon;
+  imCloseClick(Sender);
 end;
 
-{ Icon of the taskbar button: the chosen one, or a 2x2 preview of the bar's
-  icons on a tile of the bar's color (so every bar looks different) }
-procedure TLinkbarWcl.UpdateTaskbarIcon;
-var
-  big, small: HICON;
-  bmp: HBITMAP;
+procedure TLinkbarWcl.BarActivate(const AWnd: HWND);
 begin
-  if not Assigned(FTaskbarButton) then Exit;
-  if not IconsFromSpec(FTaskbarIcon, big, small)
-  then begin
-    bmp := CreateGroupIcon(ExcludeTrailingPathDelimiter(WorkDir), GetSystemMetrics(SM_CXICON));
-    big := IconFromPremultipliedBitmap(bmp);
-    DeleteObject(bmp);
-    bmp := CreateGroupIcon(ExcludeTrailingPathDelimiter(WorkDir), GetSystemMetrics(SM_CXSMICON));
-    small := IconFromPremultipliedBitmap(bmp);
-    DeleteObject(bmp);
-  end;
-  if (big = 0) and (small = 0) then Exit; // keep the current one
-  TTaskbarButton(FTaskbarButton).SetIcons(big, small);
-end;
-
-procedure TLinkbarWcl.SetTaskbarIcon(const AValue: string);
-begin
-  if (Trim(AValue) = FTaskbarIcon) then Exit;
-  FTaskbarIcon := Trim(AValue);
-  UpdateTaskbarIcon;
-end;
-
-procedure TLinkbarWcl.LauncherSysStats(out ACpu, ARam: Integer);
-begin
-  // the widgets timer keeps sampling while the bar is hidden
-  ACpu := FSysWidgets.CpuLoad;
-  ARam := FSysWidgets.RamLoad;
+  SetForegroundWindowInternal(AWnd);
 end;
 
 procedure TLinkbarWcl.LauncherShowAsBar(Sender: TObject);
@@ -4860,16 +4234,33 @@ end;
 
 procedure TLinkbarWcl.SetZoomPercent(AValue: Integer);
 begin
-  AValue := EnsureRange(AValue, ZOOM_MIN, ZOOM_MAX);
-  if (AValue = FZoomPercent)
+  if not FZoom.ChangePercent(AValue)
   then Exit;
-  FZoomPercent := AValue;
-  FZoomCursor := -1;
-  Items.ZoomIconSize := ZoomIconSizeValue;
   // the bar thickness changes
   if Assigned(oAppBar)
   then oAppBar.AppBarPosChanged
   else UpdateWindowSize;
+end;
+
+function TLinkbarWcl.GetZoomPercent: Integer;
+begin
+  Result := FZoom.Percent;
+end;
+
+function TLinkbarWcl.BarIconOffset: TPoint;
+begin
+  Result := FIconOffset;
+end;
+
+function TLinkbarWcl.BarSeparatorStyle: TSeparatorStyle;
+begin
+  Result := FSeparatorStyle;
+end;
+
+procedure TLinkbarWcl.BarDrawItemMarks(const ABitmap: THBitmap; const AItem: TItemBase; const ARect: TRect);
+begin
+  FRunning.DrawMark(ABitmap, AItem, ARect);
+  FPinned.DrawMark(ABitmap, AItem, ARect);
 end;
 
 procedure TLinkbarWcl.RedrawZoom;
@@ -4879,152 +4270,6 @@ begin
   then Exit;
   RecreateMainBitmap(BitmapPanel.Width, BitmapPanel.Height);
   UpdateWindow;
-end;
-
-{ Icons near the mouse grow (cosine falloff over ~2.5 slots), the row spreads
-  out around the mouse so the icon under it stays under it }
-procedure TLinkbarWcl.DrawItemsZoomed;
-const
-  RANGE = 2.5; // slots affected on each side
-var
-  vertical: Boolean;
-  z, d, f, shift, t, vis, cursor: Double;
-  n, i, k, slot, size, x, y: Integer;
-  scales, lens, starts: array of Double;
-  base, vr: TRect;
-  item: TItemBase;
-  baseStart, baseLen: Double;
-  gap, sepIdx: Integer;
-  sr: TRect;
-begin
-  vertical := IsVertical(Align);
-  z := FZoomPercent / 100;
-  n := Items.Count;
-  if (n = 0) then Exit;
-  if vertical then slot := ButtonSize.cy else slot := ButtonSize.cx;
-  if (slot <= 0) then Exit;
-  cursor := FZoomCursor;
-
-  SetLength(scales, n);
-  SetLength(lens, n);
-  SetLength(starts, n);
-
-  // scale and enlarged length of every item
-  for i := 0 to n-1 do
-  begin
-    base := Items[i].Rect;
-    if vertical
-    then begin baseStart := base.Top;  baseLen := base.Height; end
-    else begin baseStart := base.Left; baseLen := base.Width;  end;
-
-    if Items.IsSeparator(Items[i])
-    then scales[i] := 1
-    else begin
-      d := Abs(cursor - (baseStart + baseLen / 2)) / slot;
-      if (d < RANGE)
-      then f := (1 + Cos(Pi * d / RANGE)) / 2
-      else f := 0;
-      scales[i] := 1 + (z - 1) * f;
-    end;
-    lens[i] := baseLen * scales[i];
-  end;
-
-  // positions: keep the point under the mouse fixed
-  if vertical then vis := Items[0].Rect.Top else vis := Items[0].Rect.Left;
-  // gap before the pinned items (see TLBItemList.PinnedSepRect)
-  gap := 0;
-  sepIdx := -1;
-  if not Items.PinnedSepRect.IsEmpty
-  then begin
-    if vertical then gap := Items.PinnedSepRect.Height else gap := Items.PinnedSepRect.Width;
-  end;
-  for i := 0 to n-1 do
-  begin
-    if (gap > 0) and (i > 0) and Items[i].Pinned and not Items[i-1].Pinned
-    then begin
-      sepIdx := i;
-      vis := vis + gap;
-    end;
-    starts[i] := vis;
-    vis := vis + lens[i];
-  end;
-
-  k := -1;
-  for i := 0 to n-1 do
-  begin
-    base := Items[i].Rect;
-    if vertical
-    then begin baseStart := base.Top;  baseLen := base.Height; end
-    else begin baseStart := base.Left; baseLen := base.Width;  end;
-    if (cursor >= baseStart) and (cursor < baseStart + baseLen)
-    then begin
-      k := i;
-      Break;
-    end;
-  end;
-
-  if (k >= 0)
-  then begin
-    base := Items[k].Rect;
-    if vertical
-    then begin baseStart := base.Top;  baseLen := base.Height; end
-    else begin baseStart := base.Left; baseLen := base.Width;  end;
-    t := (cursor - baseStart) / baseLen;
-    shift := cursor - (starts[k] + t * lens[k]);
-  end
-  else begin
-    // mouse before the first item: grow to the right; after the last: to the left
-    if vertical
-    then begin
-      if (cursor < Items[0].Rect.Top) then shift := 0
-      else shift := Items[n-1].Rect.Bottom - (starts[n-1] + lens[n-1]);
-    end
-    else begin
-      if (cursor < Items[0].Rect.Left) then shift := 0
-      else shift := Items[n-1].Rect.Right - (starts[n-1] + lens[n-1]);
-    end;
-  end;
-
-  // draw
-  if (sepIdx >= 0) and (FSeparatorStyle <> ESeparatorStyleSpace)
-  then begin
-    sr := Items.PinnedSepRect;
-    if vertical
-    then sr := Rect(sr.Left, Round(starts[sepIdx] - gap + shift), sr.Right, Round(starts[sepIdx] + shift))
-    else sr := Rect(Round(starts[sepIdx] - gap + shift), sr.Top, Round(starts[sepIdx] + shift), sr.Bottom);
-    ThemeDrawSeparator(BitmapPanel, Align, sr);
-  end;
-
-  for i := 0 to n-1 do
-  begin
-    item := Items[i];
-    base := item.Rect;
-    if vertical
-    then vr := Rect(base.Left, Round(starts[i] + shift), base.Right, Round(starts[i] + shift + lens[i]))
-    else vr := Rect(Round(starts[i] + shift), base.Top, Round(starts[i] + shift + lens[i]), base.Bottom);
-
-    if Items.IsSeparator(item)
-    then begin
-      if (FSeparatorStyle <> ESeparatorStyleSpace)
-      then ThemeDrawSeparator(BitmapPanel, Align, vr);
-      Continue;
-    end;
-
-    size := Round(IconSize * scales[i]);
-    if vertical
-    then begin
-      y := vr.Top + (vr.Height - size) div 2;
-      x := base.Left + FIconOffset.X + (IconSize - size) div 2;   // grows to both sides
-    end
-    else begin
-      x := vr.Left + (vr.Width - size) div 2;
-      y := base.Top + FIconOffset.Y + (IconSize - size) div 2;    // grows to both sides
-    end;
-
-    Items.DrawScaled(BitmapPanel.Dc, item, x, y, size);
-    FRunning.DrawMark(BitmapPanel, item, vr);
-    DrawPinnedMark(BitmapPanel, item, vr);
-  end;
 end;
 
 { ---------- CPU / RAM widgets ---------- }

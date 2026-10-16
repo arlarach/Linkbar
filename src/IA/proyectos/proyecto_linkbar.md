@@ -13,6 +13,13 @@
 - `Linkbar.dproj` - 2026-10-16 17:06
 - `Linkbar.dproj` - 2026-10-16 17:08
 - `Linkbar.dproj` - 2026-10-16 17:12
+- `Linkbar.dproj` - 2026-10-16 17:14
+- `Linkbar.dproj` - 2026-10-16 17:17
+- `Linkbar.dproj` - 2026-10-16 17:20
+- `Linkbar.dproj` - 2026-10-16 17:23
+- `Linkbar.dproj` - 2026-10-16 18:07
+- `Linkbar.dproj` - 2026-10-16 18:11
+- `Linkbar.dproj` - 2026-10-16 18:44
 
 **Pas**:
 - `mUnit.pas` - 2026-10-10 16:03
@@ -40,6 +47,33 @@
 - `Linkbar.Bar.Collapse.pas` - 2026-10-16 17:12
 - `Linkbar.Bar.Fullscreen.pas` - 2026-10-16 17:12
 - `mUnit.pas` - 2026-10-16 17:12
+- `Linkbar.Bar.Launcher.pas` - 2026-10-16 17:14
+- `mUnit.pas` - 2026-10-16 17:14
+- `Linkbar.Bar.Pinned.pas` - 2026-10-16 17:17
+- `Linkbar.Bar.ActionButtons.pas` - 2026-10-16 17:17
+- `Linkbar.Bar.Host.pas` - 2026-10-16 17:17
+- `Linkbar.Bar.Collapse.pas` - 2026-10-16 17:17
+- `Linkbar.Bar.Fullscreen.pas` - 2026-10-16 17:17
+- `Linkbar.Bar.Launcher.pas` - 2026-10-16 17:17
+- `mUnit.pas` - 2026-10-16 17:17
+- `Linkbar.Bar.Zoom.pas` - 2026-10-16 17:20
+- `mUnit.pas` - 2026-10-16 17:20
+- `Linkbar.Bar.Zoom.pas` - 2026-10-16 17:20
+- `Linkbar.Bar.Dock.pas` - 2026-10-16 17:23
+- `Linkbar.Bar.Host.pas` - 2026-10-16 17:23
+- `Linkbar.Bar.Launcher.pas` - 2026-10-16 17:23
+- `mUnit.pas` - 2026-10-16 17:23
+- `Linkbar.Bar.DropTarget.pas` - 2026-10-16 18:07
+- `mUnit.pas` - 2026-10-16 18:07
+- `Linkbar.Bar.Painter.pas` - 2026-10-16 18:11
+- `Linkbar.Bar.Host.pas` - 2026-10-16 18:11
+- `Linkbar.Bar.Zoom.pas` - 2026-10-16 18:11
+- `Linkbar.Bar.Dock.pas` - 2026-10-16 18:11
+- `Linkbar.Bar.Thumbs.pas` - 2026-10-16 18:11
+- `Linkbar.Bar.DropTarget.pas` - 2026-10-16 18:11
+- `mUnit.pas` - 2026-10-16 18:11
+- `Linkbar.Bar.PopupMenu.pas` - 2026-10-16 18:44
+- `mUnit.pas` - 2026-10-16 18:44
 
 ## Bitácora Lógica y Decisiones
 

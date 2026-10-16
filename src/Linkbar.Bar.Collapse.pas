@@ -23,9 +23,6 @@ type
   // What the collapse needs from the bar window
   ICollapseHost = interface(ILinkbarHost)
     ['{A3D7F1E4-5B28-4C9A-8E16-7F0B2D4C6A93}']
-    // Closes the thumbnails and the tooltip
-    procedure BarDismissPopups;
-    procedure BarSetAutoHideLock(const ALock: Boolean);
     // Lays out the bar again (screen edge reservation included)
     procedure BarRelayout;
     // The bar is a dock, visible and not auto hidden

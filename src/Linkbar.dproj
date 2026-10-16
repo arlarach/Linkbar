@@ -154,6 +154,14 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="Linkbar.Bar.Fullscreen.pas"/>
         <DCCReference Include="Linkbar.Bar.Thumbs.pas"/>
         <DCCReference Include="Linkbar.Bar.Running.pas"/>
+        <DCCReference Include="Linkbar.Bar.Launcher.pas"/>
+        <DCCReference Include="Linkbar.Bar.Pinned.pas"/>
+        <DCCReference Include="Linkbar.Bar.ActionButtons.pas"/>
+        <DCCReference Include="Linkbar.Bar.Zoom.pas"/>
+        <DCCReference Include="Linkbar.Bar.Dock.pas"/>
+        <DCCReference Include="Linkbar.Bar.DropTarget.pas"/>
+        <DCCReference Include="Linkbar.Bar.Painter.pas"/>
+        <DCCReference Include="Linkbar.Bar.PopupMenu.pas"/>
         <None Include="linkbar.inc"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

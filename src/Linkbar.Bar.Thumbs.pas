@@ -26,7 +26,6 @@ type
     function BarItemTarget(const AIndex: Integer): string;
     // Rectangle of the item in the bar (client coordinates)
     function BarItemRect(const AIndex: Integer): TRect;
-    function BarHotIndex: Integer;
     // Dragging, locked or auto hidden: no thumbnails
     function BarThumbsBlocked: Boolean;
   end;

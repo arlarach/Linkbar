@@ -20,8 +20,6 @@ type
   IFullscreenHost = interface(ILinkbarHost)
     ['{5E92C0B7-14D3-4A68-B3F5-9D1E7A2C4086}']
     function BarIsTaskbarIcon: Boolean;
-    // Closes the thumbnails and the tooltip
-    procedure BarDismissPopups;
   end;
 
   TFullscreenWatcher = class
