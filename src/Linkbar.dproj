@@ -148,6 +148,12 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="Linkbar.Bar.MenuHook.pas"/>
         <DCCReference Include="Linkbar.Bar.SaveQueue.pas"/>
         <DCCReference Include="Linkbar.Bar.Profiles.pas"/>
+        <DCCReference Include="Linkbar.Bar.Host.pas"/>
+        <DCCReference Include="Linkbar.Bar.SysWidgets.pas"/>
+        <DCCReference Include="Linkbar.Bar.Collapse.pas"/>
+        <DCCReference Include="Linkbar.Bar.Fullscreen.pas"/>
+        <DCCReference Include="Linkbar.Bar.Thumbs.pas"/>
+        <DCCReference Include="Linkbar.Bar.Running.pas"/>
         <None Include="linkbar.inc"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
