@@ -41,6 +41,7 @@ type
     function BarWorkDir: string;
     function BarItems: TLBItemList;
     function BarSettingsFile: string;
+    function BarPanelName: string;
     // Work area of the monitor of the bar
     function BarWorkArea: TRect;
     // Bounds of the bar window
@@ -50,6 +51,10 @@ type
     function BarIsDock: Boolean;
     function BarBackgroundColor: Cardinal;
     function BarIsLightStyle: Boolean;
+    function BarAutoHideTransparency: Boolean;
+    // Width of the corner gaps kept free when the bar is hidden
+    function BarCorner1Gap: Integer;
+    function BarCorner2Gap: Integer;
     function BarHotIndex: Integer;
     function BarPressedIndex: Integer;
     // The bitmap where the bar draws its items

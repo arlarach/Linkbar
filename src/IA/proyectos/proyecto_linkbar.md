@@ -22,6 +22,10 @@
 - `Linkbar.dproj` - 2026-10-16 18:44
 - `Linkbar.dproj` - 2026-10-16 18:48
 - `Linkbar.dproj` - 2026-10-16 19:17
+- `Linkbar.dproj` - 2026-10-16 19:20
+- `Linkbar.dproj` - 2026-10-16 19:28
+- `Linkbar.dproj` - 2026-10-16 19:30
+- `Linkbar.dproj` - 2026-10-16 19:34
 
 **Pas**:
 - `mUnit.pas` - 2026-10-10 16:03
@@ -81,6 +85,26 @@
 - `mUnit - copia.pas` - 2026-10-16 19:11
 - `Linkbar.Bar.AutoHide.pas` - 2026-10-16 19:17
 - `mUnit.pas` - 2026-10-16 19:17
+- `Linkbar.Bar.LinkList.pas` - 2026-10-16 19:20
+- `mUnit.pas` - 2026-10-16 19:20
+- `Linkbar.Bar.ProfileMenu.pas` - 2026-10-16 19:28
+- `Linkbar.Bar.Commands.pas` - 2026-10-16 19:28
+- `Linkbar.Bar.Host.pas` - 2026-10-16 19:28
+- `Linkbar.Bar.Launcher.pas` - 2026-10-16 19:28
+- `mUnit.pas` - 2026-10-16 19:28
+- `Linkbar.Bar.Commands.pas` - 2026-10-16 19:29
+- `Linkbar.Bar.Presenter.pas` - 2026-10-16 19:30
+- `Linkbar.Bar.Metrics.pas` - 2026-10-16 19:30
+- `Linkbar.Bar.Host.pas` - 2026-10-16 19:30
+- `mUnit.pas` - 2026-10-16 19:30
+- `Linkbar.Bar.ItemActions.pas` - 2026-10-16 19:34
+- `Linkbar.Bar.Keyboard.pas` - 2026-10-16 19:34
+- `mUnit.pas` - 2026-10-16 19:34
+- `Linkbar.Bar.ItemActions.pas` - 2026-10-16 19:36
+- `Linkbar.Bar.Commands.pas` - 2026-10-16 19:36
+- `mUnit.pas` - 2026-10-16 19:39
+- `mUnit.pas` - 2026-10-16 19:40
+- `mUnit.pas` - 2026-10-16 19:42
 
 ## Bitácora Lógica y Decisiones
 

@@ -164,6 +164,13 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="Linkbar.Bar.PopupMenu.pas"/>
         <DCCReference Include="Linkbar.Bar.Config.pas"/>
         <DCCReference Include="Linkbar.Bar.AutoHide.pas"/>
+        <DCCReference Include="Linkbar.Bar.LinkList.pas"/>
+        <DCCReference Include="Linkbar.Bar.ProfileMenu.pas"/>
+        <DCCReference Include="Linkbar.Bar.Commands.pas"/>
+        <DCCReference Include="Linkbar.Bar.Presenter.pas"/>
+        <DCCReference Include="Linkbar.Bar.Metrics.pas"/>
+        <DCCReference Include="Linkbar.Bar.ItemActions.pas"/>
+        <DCCReference Include="Linkbar.Bar.Keyboard.pas"/>
         <None Include="linkbar.inc"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

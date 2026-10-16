@@ -19,10 +19,13 @@ uses
   Linkbar.Bar.SysWidgets, Linkbar.Bar.Collapse, Linkbar.Bar.Fullscreen,
   Linkbar.Bar.Thumbs, Linkbar.Bar.Running, Linkbar.Bar.Launcher,
   Linkbar.Bar.Pinned, Linkbar.Bar.ActionButtons, Linkbar.Bar.Zoom, Linkbar.Bar.Dock, Linkbar.Bar.DropTarget, Linkbar.Bar.Painter, Linkbar.Bar.PopupMenu, Linkbar.Bar.Config,
-  Linkbar.Bar.AutoHide;
+  Linkbar.Bar.AutoHide, Linkbar.Bar.LinkList,
+  Linkbar.Bar.ProfileMenu, Linkbar.Bar.Commands,
+  Linkbar.Bar.Presenter, Linkbar.Bar.Metrics,
+  Linkbar.Bar.ItemActions, Linkbar.Bar.Keyboard;
 
 type
-  TLinkbarWcl = class(TLinkbarCustomFrom, ILinkbarHost, ICollapseHost, IFullscreenHost, IThumbsHost, ILauncherHost, IPinnedHost, IActionButtonsHost, IDockHost, IDropTargetHost, IAutoHideHost)
+  TLinkbarWcl = class(TLinkbarCustomFrom, ILinkbarHost, ICollapseHost, IFullscreenHost, IThumbsHost, ILauncherHost, IPinnedHost, IActionButtonsHost, IDockHost, IDropTargetHost, IAutoHideHost, ILinkListHost, IProfileHost, ICommandsHost, IItemActionsHost, IKeyboardHost)
     pMenu: TPopupMenu;
     imClose: TMenuItem;
     imProperties: TMenuItem;
@@ -69,7 +72,13 @@ type
     BitmapSelected: THBitmap;
     FDropTarget: TBarDropTarget;  // drop indicator
     FPainter: TBarPainter;        // background, captions and icons
+    FPresenter: TBarPresenter;    // puts the bar on the layered window
     FAutoHider: TBarAutoHide;     // auto hide of the bar
+    FLinkList: TLinkList;         // items of the links folder
+    FProfileMenu: TProfileMenu;   // profiles submenu and commands
+    FCommands: TBarCommands;      // group and remove commands
+    FItemActions: TItemActivator; // run / click / rename an item
+    FKeyboard: TBarKeyboard;      // keyboard of the bar
     BitmapButton: THBitmap;
     BitmapPanel: THBitmap;
     Items: TLBItemList;
@@ -176,8 +185,6 @@ type
     procedure SetUseBkgndColor(AValue: Boolean);
     function GetAlign: TPanelAlign;
     procedure DrawBackground(const ABitmap: THBitmap; const AClipRect: TRect);
-    procedure DrawCaption(const ABitmap: THBitmap; const AIndex: Integer;
-      const ADrawForDrag: Boolean = False);
     procedure DrawItem(ABitmap: THBitmap; AIndex: integer; ASelected,
       APressed: Boolean; ADrawBg: Boolean = True; ADrawForDrag: Boolean = False);
     procedure DrawItems(const AWidth, AHeight: integer);
@@ -190,7 +197,6 @@ type
     function GetBackgroundColor: Cardinal;
     function ItemIndexByPoint(const APt: TPoint;
       const ALastIndex: integer = ITEM_NONE): Integer;
-    function CheckItem(AIndex: Integer): Boolean;
     procedure DeleteItem(const AIndex: Integer);
     function ScaleDimension(const X: Integer): Integer; inline;
     // ILinkbarHost
@@ -240,6 +246,30 @@ type
     procedure BarActivate(const AWnd: HWND);
     // IPinnedHost / IActionButtonsHost / common services
     procedure BarPinnedChanged;
+    // IItemActionsHost / IKeyboardHost
+    function BarForegroundAtMouseDown: HWND;
+    procedure BarShowGroup(const AIndex: Integer);
+    procedure BarRenameGroup(const AIndex: Integer);
+    procedure BarSetHotIndex(const AIndex: Integer);
+    function BarItemOrder: TItemOrder;
+    function BarMultiLineVertical: Boolean;
+    function BarAutoHideTransparency: Boolean;
+    function BarCorner1Gap: Integer;
+    function BarCorner2Gap: Integer;
+    // IProfileHost / ICommandsHost
+    procedure BarSaveLinks;
+    procedure BarSetWorkDir(const ADir: string);
+    procedure BarReloadLinks;
+    procedure BarMarkRemoved;
+    procedure BarStopDirWatch;
+    // ILinkListHost
+    function BarEnsureItems: TLBItemList;
+    function BarSortAlphabetically: Boolean;
+    function BarDropPosition: Integer;
+    procedure BarDeleteItem(const AIndex: Integer);
+    procedure BarRescanTimer(const AEnabled: Boolean);
+    procedure BarClearDropPosition;
+    procedure BarLinksChanged;
     // IAutoHideHost
     function BarAutoHideEnabled: Boolean;
     function BarAutoShowDelay: Integer;
@@ -299,7 +329,6 @@ type
     FDragIndex: Integer;
     MonitorsWorkareaWoTaskbar: TDynRectArray;
     procedure DoClickItem(X, Y: Integer);
-    procedure DoExecuteItem(const AIndex: Integer);
     procedure ShowGroup(const AIndex: Integer);
     procedure DragExternalFile(const AFileName: string; AIcon: HBITMAP; AIconSize: Integer);
     procedure GroupChanged(Sender: TObject);
@@ -312,17 +341,9 @@ type
     procedure imPinAllActionsClick(Sender: TObject);
     procedure imUnpinAllClick(Sender: TObject);
     procedure ApplyPinned;
-    procedure LoadPinned;
     function PinnedLength(const AVertical: Boolean): Integer;
     procedure imDeleteActionClick(Sender: TObject);
     procedure ReloadLinks;
-    procedure SwitchProfile(const AName: string);
-    procedure CycleProfile(const ADelta: Integer);
-    procedure BuildProfilesMenu;
-    procedure ProfileItemClick(Sender: TObject);
-    procedure ProfileNewClick(Sender: TObject);
-    procedure ProfileRenameClick(Sender: TObject);
-    procedure ProfileDeleteClick(Sender: TObject);
     procedure RenameGroup(const AIndex: Integer);
     procedure DoRenameItem(const AIndex: Integer);
     procedure DoDelete(const AIndex: Integer);
@@ -338,6 +359,9 @@ type
     procedure QueryHideEvent(Sender: TObject; AEnabled: boolean);
     function IsItemIndex(const AIndex: Integer): Boolean;
     procedure CreateBitmaps;
+    procedure CreateServices;
+    procedure DestroyServices;
+    procedure CreateExtraMenuItems;
   protected
     // Drag&Drop functions
     procedure SetDropPosition(AValue: TPoint);
@@ -424,9 +448,9 @@ uses
   Types, Math, Dialogs, StrUtils, Themes, System.Generics.Collections,
   Winapi.ShellAPI,
   ExplorerMenu, Linkbar.Shell, Linkbar.Theme,
-  Linkbar.OS, Linkbar.L10n, JumpLists.Form, JumpLists.Api_2, RenameDialog,
-  Linkbar.SettingsForm, Linkbar.Settings, Linkbar.GroupForm, Linkbar.ThumbForm,
-  Linkbar.Actions, Linkbar.TaskbarButton, Linkbar.IconPicker, Linkbar.Bar.MenuHook;
+  Linkbar.OS, Linkbar.L10n, JumpLists.Form, JumpLists.Api_2,
+  Linkbar.SettingsForm, Linkbar.Settings, Linkbar.GroupForm,
+  Linkbar.Actions, Linkbar.Bar.MenuHook;
 
 const
   bf: TBlendFunction = (BlendOp: AC_SRC_OVER; BlendFlags: 0;
@@ -471,99 +495,48 @@ begin
   end;
 end;
 
-function FindinSL(sl: TStringList; s: string; var index: integer): boolean;
-var i: integer;
+procedure TLinkbarWcl.GetOrCreateFilesList(const AFileName: string);
 begin
-  index := -1;
-  for i := 0 to sl.Count-1 do
-  begin
-    if CompareText(sl[i], s) = 0
-    then begin
-      index := i;
-      Break;
-    end;
-  end;
-  Result := (index >= 0);
+  FLinkList.Load(AFileName);
 end;
 
-procedure TLinkbarWcl.GetOrCreateFilesList(const AFileName: string);
-var list: TStringList;
-    templist: TStringList;
-    sr: TSearchRec;
-    i, j : integer;
-    ext: string;
+function TLinkbarWcl.BarEnsureItems: TLBItemList;
 begin
   if not Assigned(Items)
   then Items := TLBItemList.Create;
-  Items.Clear;
+  Result := Items;
+end;
 
-  // Load last ordered items list
-  list := TStringList.Create;
-  if FileExists(AFileName)
-  then list.LoadFromFile(AFileName, TEncoding.UTF8);
+function TLinkbarWcl.BarSortAlphabetically: Boolean;
+begin
+  Result := FConfig.SortAlphabetically;
+end;
 
-  templist := TStringList.Create;
-  templist.CaseSensitive := False;
-  templist.Sorted := False;
+function TLinkbarWcl.BarDropPosition: Integer;
+begin
+  Result := FDropTarget.Position;
+end;
 
-  // Find supperted files (and groups) in working directory
-  for ext in ES_ITEMS_ARRAY do
-  begin
-    if ( FindFirst( WorkDir + '*' + ext, faAnyFile, sr) = 0 )
-    then repeat
-      templist.Add(sr.Name);
-    until (FindNext(sr) <> 0);
-    FindClose(sr);
-  end;
+procedure TLinkbarWcl.BarDeleteItem(const AIndex: Integer);
+begin
+  DeleteItem(AIndex);
+end;
 
-  templist.Sort;
+procedure TLinkbarWcl.BarRescanTimer(const AEnabled: Boolean);
+begin
+  tmrUpdate.Enabled := AEnabled;
+end;
 
-  // Ordering founded items
-  i := 0;
-  while i < list.Count do
-  begin
-    if TItemSeparator.IsSeparator(list[i])
-    then begin
-      Inc(i);
-    end
-    else if templist.Find(list[i], j)
-    then begin
-      templist.Delete(j);
-      Inc(i);
-    end
-    else list.Delete(i);
-  end;
+procedure TLinkbarWcl.BarClearDropPosition;
+begin
+  SetDropPosition( Point(-1, -1) );
+end;
 
-  // New item move to end
-  if (templist.Count > 0)
-  then list.AddStrings(templist);
-  templist.Free;
-
-  // Create linkbar items
-  Items.Capacity := list.Count;
-  for var fileName in list do
-  begin
-    if TItemSeparator.IsSeparator(fileName)
-    then begin
-      Items.Add(TItemSeparator.Create);
-    end
-    else begin
-      var item := CreateItemForFile(fileName);
-      if item.LoadFromFile(WorkDir + fileName)
-      then Items.Add(item)
-      else item.Free;
-    end;
-  end;
-  list.Free;
-
-  LoadPinned;
-
-  if FConfig.SortAlphabetically
-  then Items.Sort;
-  Items.PinnedToEnd;
-
-  Items.IconSize := IconSize;
-  Items.ZoomIconSize := ZoomIconSizeValue;
+procedure TLinkbarWcl.BarLinksChanged;
+begin
+  oAppBar.AppBarPosChanged;
+  // Taskbar icon mode: the automatic icon shows the first icons of the bar
+  UpdateTaskbarIcon;
 end;
 
 function TLinkbarWcl.GetAlign: TPanelAlign;
@@ -571,24 +544,6 @@ begin
   if (FMouseDragLinkbar)
   then Result := FDragAlign
   else Result := FConfig.Align;
-end;
-
-function TLinkbarWcl.CheckItem(AIndex: Integer): Boolean;
-var fn: string;
-begin
-  fn := Items[AIndex].FileName;
-  Result := FileExists(fn);
-  if not Result
-  then begin
-    if MessageDlg( L10NFind('Message.FileNotFound', 'File does not exists')
-        + #13 + fn + #13 +
-        L10NFind('Message.DeleteShortcut', 'Delete shortcut?'),
-        mtConfirmation, [mbOK, mbCancel], 0, mbCancel) = mrOk
-    then begin
-      DeleteItem(AIndex);
-      UpdateWindowSize;
-    end;
-  end;
 end;
 
 procedure TLinkbarWcl.DeleteItem(const AIndex: Integer);
@@ -606,13 +561,6 @@ procedure TLinkbarWcl.DrawBackground(const ABitmap: THBitmap;
 begin
   if Assigned(FPainter)
   then FPainter.DrawBackground(ABitmap, AClipRect);
-end;
-
-procedure TLinkbarWcl.DrawCaption(const ABitmap: THBitmap; const AIndex: Integer;
-  const ADrawForDrag: Boolean = False);
-begin
-  if Assigned(FPainter)
-  then FPainter.DrawCaption(ABitmap, AIndex, ADrawForDrag);
 end;
 
 procedure TLinkbarWcl.DrawItem(ABitmap: THBitmap; AIndex: integer; ASelected,
@@ -715,120 +663,24 @@ begin
 end;
 
 procedure TLinkbarWcl.UpdateWindow(const ABounds: TRect);
-var w, h, c1gw, c2gw, wh: Integer;
-    Pt1, Pt2: TPoint;
-    Sz: TSize;
-    drawer: IGPGraphics;
-    r: TGPRect;
-    bmp: THBitmap;
-    dc: HDC;
-    p: Pointer;
 begin
-  if FCollapse.Animating  // the animation draws its own frames
-  then Exit;
+  if Assigned(FPresenter)
+  then FPresenter.Present(ABounds);
+end;
 
-  w := ABounds.Width;
-  h := ABounds.Height;
+function TLinkbarWcl.BarAutoHideTransparency: Boolean;
+begin
+  Result := FConfig.AutoHideTransparency;
+end;
 
-  // Draw
-  if (FAutoHider.Hidden)
-  then begin
-    // Hidden
+function TLinkbarWcl.BarCorner1Gap: Integer;
+begin
+  Result := FConfig.Corner1GapWidth;
+end;
 
-    // Check corner gaps width
-    c1gw := FConfig.Corner1GapWidth;
-    c2gw := FConfig.Corner2GapWidth;
-    if (c1gw > 0) or (c2gw > 0)
-    then begin
-      if Align in [EPanelAlignLeft, EPanelAlignRight]
-      then wh := h
-      else wh := w;
-      if (c1gw > wh - c2gw)
-      then begin
-        c1gw := 0;
-        c2gw := 0;
-      end;
-    end;
-
-    if (FConfig.AutoHideTransparency)
-    then begin
-      // and Transparency
-      Pt1 := ABounds.TopLeft;
-      Sz := TSize.Create(w, h);
-      Pt2 := Point(0,0);
-
-      bmp := THBitmap.Create(32);
-      bmp.SetSize(w, h);
-      dc := bmp.Dc;
-
-      drawer := TGPGraphics.FromHDC(dc);
-      if (c1gw > 0) or (c2gw > 0)
-      then begin
-        if Align in [EPanelAlignLeft, EPanelAlignRight]
-        then r := TGPRect.Create(0, c1gw, w, h - c1gw - c2gw)
-        else r := TGPRect.Create(c1gw, 0, w - c1gw - c2gw, h);
-        drawer.SetClip(r);
-      end;
-      drawer.Clear($01000000);
-
-      UpdateLayeredWindow(Handle, 0, @Pt1, @Sz, dc, @Pt2, 0, @bf, ULW_ALPHA);
-      bmp.Free;
-    end
-    else begin
-      // and Opaque
-      if (c1gw > 0) or (c2gw > 0)
-      then begin
-        // w/ gaps
-        Pt1 := ABounds.TopLeft;
-        Sz := TSize.Create(w, h);
-        case Align of
-          EPanelAlignLeft:   Pt2 := Point(BitmapPanel.Width - w, 0);
-          EPanelAlignTop:    Pt2 := Point(0, BitmapPanel.Height - h);
-          EPanelAlignRight:  Pt2 := Point(0, 0);
-          EPanelAlignBottom: Pt2 := Point(0, 0);
-        end;
-
-        bmp := THBitmap.Create(32);
-        bmp.SetSize(w, h);
-        dc := bmp.Dc;
-
-        if Align in [EPanelAlignLeft, EPanelAlignRight]
-        then BitBlt(dc, 0, c1gw, w, h - c1gw - c2gw, BitmapPanel.Dc, Pt2.X, c1gw, SRCCOPY)
-        else BitBlt(dc, c1gw, 0, w - c1gw - c2gw, h, BitmapPanel.Dc, c1gw, Pt2.Y, SRCCOPY);
-
-        Pt2 := Point(0,0);
-        UpdateLayeredWindow(Handle, 0, @Pt1, @Sz, dc, @Pt2, 0, @bf, ULW_ALPHA);
-        bmp.Free;
-      end
-      else begin
-        // w/o gaps
-        Pt1 := ABounds.TopLeft;
-        Sz := TSize.Create(w, h);
-        case Align of
-          EPanelAlignLeft:   Pt2 := Point(BitmapPanel.Width - w, 0);
-          EPanelAlignTop:    Pt2 := Point(0, BitmapPanel.Height - h);
-          EPanelAlignRight:  Pt2 := Point(0, 0);
-          EPanelAlignBottom: Pt2 := Point(0, 0);
-        end;
-        UpdateLayeredWindow(Handle, 0, @Pt1, @Sz, BitmapPanel.Dc, @Pt2, 0, @bf, ULW_ALPHA);
-      end;
-    end;
-  end
-  else begin
-    // Not Hidden
-    if (ABounds = BoundsRect)
-    then p := nil
-    else p := @ABounds.TopLeft;
-    Sz := TSize.Create(w, h);
-    case Align of
-      EPanelAlignLeft:   Pt2 := Point(BitmapPanel.Width - w, 0);
-      EPanelAlignTop:    Pt2 := Point(0, BitmapPanel.Height - h);
-      EPanelAlignRight:  Pt2 := Point(0, 0);
-      EPanelAlignBottom: Pt2 := Point(0, 0);
-    end;
-
-    UpdateLayeredWindow(Handle, 0, p, @Sz, BitmapPanel.Dc, @Pt2, 0, @bf, ULW_ALPHA);
-  end;
+function TLinkbarWcl.BarCorner2Gap: Integer;
+begin
+  Result := FConfig.Corner2GapWidth;
 end;
 
 procedure TLinkbarWcl.UpdateBlur;
@@ -948,11 +800,6 @@ begin
   end;
 end;
 
-procedure TLinkbarWcl.LoadPinned;
-begin
-  FPinned.Load(WorkDir);
-end;
-
 { Length taken by the pinned items when the bar is collapsed }
 function TLinkbarWcl.PinnedLength(const AVertical: Boolean): Integer;
 begin
@@ -1001,7 +848,9 @@ begin
   then MessageBox(Handle, PChar(SysErrorMessage(GetLastError)), 'Error', MB_ICONWARNING or MB_OK);
 end;
 
-procedure TLinkbarWcl.FormCreate(Sender: TObject);
+{ Services of the bar (one class per responsibility, see Linkbar.Bar.*). The order matters:
+  some of them take others as collaborators }
+procedure TLinkbarWcl.CreateServices;
 begin
   TMenuBorderHook.Install;
   FProfiles := TProfileManager.Create;
@@ -1019,15 +868,44 @@ begin
   FDock := TBarDock.Create(Self, FZoom);
   FDropTarget := TBarDropTarget.Create(Self);
   FPainter := TBarPainter.Create(Self, FDock, FZoom);
+  FPresenter := TBarPresenter.Create(Self, FCollapse, FAutoHider);
+  FLinkList := TLinkList.Create(Self, FPinned, FZoom);
+  FProfileMenu := TProfileMenu.Create(Self, FProfiles);
+  FCommands := TBarCommands.Create(Self, FProfiles);
+  FItemActions := TItemActivator.Create(Self, FFullscreen);
+  FKeyboard := TBarKeyboard.Create(Self, FAutoHider, FItemActions);
   FActionEditor := TActionButtonEditor.Create(Self);
   FRunning := TRunningIndicator.Create(Self);
-  FCreated := False;
-  CreateBitmaps;
+end;
 
-  Self.DesktopFont := True;
+procedure TLinkbarWcl.DestroyServices;
+begin
+  FreeAndNil(FSaveQueue);
+  FreeAndNil(FActionEditor);
+  FreeAndNil(FKeyboard);
+  FreeAndNil(FItemActions);
+  FreeAndNil(FCommands);
+  FreeAndNil(FProfileMenu);
+  FreeAndNil(FLinkList);
+  FreeAndNil(FPresenter);
+  FreeAndNil(FPainter);
+  FreeAndNil(FAutoHider);
+  FreeAndNil(FDropTarget);
+  FreeAndNil(FDock);
+  FreeAndNil(FZoom);
+  FreeAndNil(FPinned);
+  FreeAndNil(FLauncher);
+  FreeAndNil(FRunning);
+  FreeAndNil(FThumbs);
+  FreeAndNil(FFullscreen);
+  FreeAndNil(FCollapse);
+  FreeAndNil(FSysWidgets);
+  FreeAndNil(FProfiles);
+end;
 
-  L10n;
-
+{ Menu items that are created by code (the others are in the form) }
+procedure TLinkbarWcl.CreateExtraMenuItems;
+begin
   // New > Action button
   imNewAction := TMenuItem.Create(pMenu);
   imNewAction.Caption := L10NFind('Menu.Action', 'Action button');
@@ -1073,6 +951,19 @@ begin
 
   pMenu.Items.RethinkHotkeys;
   imNew.RethinkHotkeys;
+end;
+
+procedure TLinkbarWcl.FormCreate(Sender: TObject);
+begin
+  CreateServices;
+  FCreated := False;
+  CreateBitmaps;
+
+  Self.DesktopFont := True;
+
+  L10n;
+
+  CreateExtraMenuItems;
 
   ToolTip := TTooltip32.Create(Handle);
 
@@ -1156,21 +1047,7 @@ begin
 
   if (not FRemoved)
   then SaveLinks;
-  FreeAndNil(FSaveQueue);
-  FreeAndNil(FActionEditor);
-  FreeAndNil(FPainter);
-  FreeAndNil(FAutoHider);
-  FreeAndNil(FDropTarget);
-  FreeAndNil(FDock);
-  FreeAndNil(FZoom);
-  FreeAndNil(FPinned);
-  FreeAndNil(FLauncher);
-  FreeAndNil(FRunning);
-  FreeAndNil(FThumbs);
-  FreeAndNil(FFullscreen);
-  FreeAndNil(FCollapse);
-  FreeAndNil(FSysWidgets);
-  FreeAndNil(FProfiles);
+  DestroyServices;
 
   ThemeCloseData;
 
@@ -1195,146 +1072,38 @@ end;
 
 procedure TLinkbarWcl.FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
 begin
-  if AutoHide
-     and FAutoHider.Hidden
-  then begin
-    Key := 0;
-    Exit;
-  end;
+  if Assigned(FKeyboard)
+  then FKeyboard.KeyDown(Key);
+end;
 
-  if (Items.Count = 0) then Exit;
+function TLinkbarWcl.BarForegroundAtMouseDown: HWND;
+begin
+  Result := FForegroundAtMouseDown;
+end;
 
-  case Key of
-    VK_SPACE, VK_RETURN: // Run
-      begin
-        if IsItemIndex(HotIndex)
-        then begin
-          ToolTip.Cancel;
-          DoExecuteItem(HotIndex);
-        end;
-        Exit;
-      end;
-    VK_ESCAPE: // Deselect
-      begin
-        if (HotIndex = ITEM_NONE)
-        then begin
-          FAutoHider.CanAutoHide := True;
-          FAutoHider.Hide;
-        end
-        else HotIndex := ITEM_NONE;
-        Exit;
-      end;
-    VK_F2: // Rename
-      begin
-        if IsItemIndex(HotIndex)
-        then begin
-          ToolTip.Cancel;
-          DoRenameItem(HotIndex);
-        end;
-        Exit;
-      end;
-    VK_DELETE:
-      begin
-        if IsItemIndex(HotIndex)
-        then begin
-          ToolTip.Cancel;
-          SHDeleteOp(Handle, Items[HotIndex].FileName, GetKeyState(VK_SHIFT) >= 0);
-        end;
-        Exit;
-      end;
-    VK_TAB:
-      begin
-        HotIndex := HotIndex + 1;
-        Exit;
-      end;
-    // Arrows
-    VK_LEFT, VK_RIGHT, VK_DOWN, VK_UP:
-      begin
-        // No hot item:
-        // Left/Up - last
-        // Right/Down - first
-        if (HotIndex = ITEM_NONE)
-        then begin
-          if (Key in [VK_LEFT, VK_UP])
-          then HotIndex := Items.Count-1
-          else HotIndex := 0;
-          Exit;
-        end;
+procedure TLinkbarWcl.BarShowGroup(const AIndex: Integer);
+begin
+  ShowGroup(AIndex);
+end;
 
-        // One-line panel:
-        // Left/Up - prev
-        // Right/Down - next
-        if (Items.Lines.Count = 1)
-        then begin
-          if (Key in [VK_LEFT, VK_UP])
-          then HotIndex := Max(HotIndex - 1, 0)
-          else HotIndex := Min(HotIndex + 1, Items.Count-1);
-          Exit;
-        end;
+procedure TLinkbarWcl.BarRenameGroup(const AIndex: Integer);
+begin
+  RenameGroup(AIndex);
+end;
 
-        // Multi-line panel:
-        case Key of
-          VK_LEFT:
-            begin
-              if (ItemOrder = EItemOrderLeftToRight)
-              then HotIndex := Max(HotIndex - 1, 0)
-              else begin
-                if (oAppBar.Vertical)
-                then begin
-                  const prevLineIndex: Integer = Max(0, Items.GetLineIndex(HotIndex) - 1);
-                  HotIndex := Max(HotIndex - Items.Lines[prevLineIndex], 0);
-                end
-                else
-                  HotIndex := Max(HotIndex - Items.Lines.Count, 0);
-              end;
-            end;
-          VK_RIGHT:
-            begin
-              if (ItemOrder = EItemOrderLeftToRight)
-              then HotIndex := Min(HotIndex + 1, Items.Count-1)
-              else begin
-                if (oAppBar.Vertical)
-                then begin
-                  const nextLineIndex: Integer = Min(Items.Lines.Count-1, Items.GetLineIndex(HotIndex) + 1);
-                  HotIndex := Min(HotIndex + Items.Lines[nextLineIndex], Items.Count-1);
-                end
-                else
-                  HotIndex := Min(HotIndex + Items.Lines.Count, Items.Count-1)
-              end;
-            end;
-          VK_UP:
-            begin
-              if (ItemOrder = EItemOrderUpToDown)
-              then HotIndex := Max(HotIndex - 1, 0)
-              else begin
-                if (oAppBar.Vertical)
-                then
-                  HotIndex := Max(HotIndex - Items.Lines.Count, 0)
-                else begin
-                  const prevLineIndex: Integer = Max(0, Items.GetLineIndex(HotIndex) - 1);
-                  HotIndex := Max(HotIndex - Items.Lines[prevLineIndex], 0);
-                end;
-              end;
-            end;
-          VK_DOWN:
-            begin
-              if (ItemOrder = EItemOrderUpToDown)
-              then HotIndex := Min(HotIndex + 1, Items.Count-1)
-              else begin
-                if (oAppBar.Vertical)
-                then
-                  HotIndex := Min(HotIndex + Items.Lines.Count, Items.Count-1)
-                else begin
-                  const nextLineIndex: Integer = Min(Items.Lines.Count-1, Items.GetLineIndex(HotIndex) + 1);
-                  HotIndex := Min(HotIndex + Items.Lines[nextLineIndex], Items.Count-1);
-                end;
-              end;
-            end;
-        end;
-      end;
-  else
-    Exit;
-  end;
+procedure TLinkbarWcl.BarSetHotIndex(const AIndex: Integer);
+begin
+  HotIndex := AIndex;
+end;
+
+function TLinkbarWcl.BarItemOrder: TItemOrder;
+begin
+  Result := FConfig.ItemOrder;
+end;
+
+function TLinkbarWcl.BarMultiLineVertical: Boolean;
+begin
+  Result := oAppBar.Vertical;
 end;
 
 procedure TLinkbarWcl.CMDialogKey(var Msg: TCMDialogKey);
@@ -1638,22 +1407,6 @@ begin
   end;
 end;
 
-procedure TLinkbarWcl.DoExecuteItem(const AIndex: Integer);
-begin
-  if not IsItemIndex(AIndex)
-  then Exit;
-
-  if (Items[AIndex] is TItemAction)
-  then RunActionItem(AIndex)
-  else if (Items[AIndex] is TItemGroup)
-  then ShowGroup(AIndex)
-  // Open program: bring it to the front / minimize / next window (like the taskbar)
-  else if Items[AIndex].Running
-          and ActivateProgram(Items[AIndex].TargetPath, FForegroundAtMouseDown)
-  then Exit
-  else Items[AIndex].DoExecute(Handle);
-end;
-
 { Show group content as a popup grid of icons }
 procedure TLinkbarWcl.ShowGroup(const AIndex: Integer);
 begin
@@ -1673,44 +1426,13 @@ begin
 end;
 
 procedure TLinkbarWcl.DoClickItem(X, Y: Integer);
-var iIndex: Integer;
 begin
-  iIndex := ItemIndexByPoint( Point(X, Y) );
-
-  // Ctrl+Shift+click: run as administrator
-  if IsItemIndex(iIndex)
-     and (GetKeyState(VK_CONTROL) < 0)
-     and (GetKeyState(VK_SHIFT) < 0)
-     and (not Items.IsSeparator(Items[iIndex]))
-     and (not (Items[iIndex] is TItemGroup))
-     and (not (Items[iIndex] is TItemAction))
-  then begin
-    ShellExecute(Handle, 'runas', PChar(Items[iIndex].FileName), nil, nil, SW_SHOWNORMAL);
-    Exit;
-  end;
-
-  DoExecuteItem(iIndex);
+  FItemActions.Click( ItemIndexByPoint( Point(X, Y) ) );
 end;
 
 procedure TLinkbarWcl.DoRenameItem(const AIndex: Integer);
-var dlg: TRenamingWCl;
 begin
-  if not IsItemIndex(AIndex)
-  then Exit;
-
-  // Groups: ask only the name, keep the ".group" suffix
-  if (Items[AIndex] is TItemGroup)
-  then begin
-    RenameGroup(AIndex);
-    Exit;
-  end;
-
-  FAutoHider.Locked := True;
-  dlg := TRenamingWCl.Create(Self);
-  dlg.Pidl := Items[AIndex].Pidl;
-  dlg.ShowModal;
-  dlg.Free;
-  FAutoHider.Locked := False;
+  FItemActions.Rename(AIndex);
 end;
 
 { Drag a file that is not a bar item (an icon dragged out of a group window).
@@ -1826,15 +1548,8 @@ end;
 { ---------- action buttons ---------- }
 
 procedure TLinkbarWcl.RunActionItem(const AIndex: Integer);
-var target: HWND;
 begin
-  target := FForegroundAtMouseDown;
-  if TFullscreenWatcher.IsOurWindow(target)
-  then target := FFullscreen.LastForeignWnd;
-  if TFullscreenWatcher.IsOurWindow(target)
-  then target := 0;
-  ReleaseCapture;
-  RunAction(TItemAction(Items[AIndex]).Data, target);
+  FItemActions.RunAction(AIndex);
 end;
 
 procedure TLinkbarWcl.imNewActionClick(Sender: TObject);
@@ -1914,139 +1629,29 @@ begin
   UpdateTaskbarIcon;
 end;
 
-procedure TLinkbarWcl.SwitchProfile(const AName: string);
-var dir: string;
-    settings: TSettingsFile;
+procedure TLinkbarWcl.BarSaveLinks;
 begin
-  if SameText(AName, FProfiles.Current) then Exit;
-  dir := FProfiles.ProfileDir(AName);
-  if not (DirectoryExists(dir) or ForceDirectories(dir)) then Exit;
-  CloseThumbs;
-  ToolTip.Cancel;
   SaveLinks;
-  FProfiles.Current := AName;
-  settings.Open(FSettingsFileName);
-  settings.Write(INI_PROFILE, FProfiles.Current);
-  settings.Close;
-  WorkDir := dir;
+end;
+
+procedure TLinkbarWcl.BarSetWorkDir(const ADir: string);
+begin
+  WorkDir := ADir;
+end;
+
+procedure TLinkbarWcl.BarReloadLinks;
+begin
   ReloadLinks;
 end;
 
-procedure TLinkbarWcl.CycleProfile(const ADelta: Integer);
+procedure TLinkbarWcl.BarMarkRemoved;
 begin
-  SwitchProfile(FProfiles.Neighbour(ADelta));
+  FRemoved := True;
 end;
 
-procedure TLinkbarWcl.BuildProfilesMenu;
-
-  function Add(const ACaption, AHint: string; AOnClick: TNotifyEvent; AChecked: Boolean = False): TMenuItem;
-  begin
-    Result := TMenuItem.Create(pMenu);
-    Result.Caption := ACaption;
-    Result.Hint := AHint;
-    Result.Checked := AChecked;
-    Result.OnClick := AOnClick;
-    imProfiles.Add(Result);
-  end;
-
-var name, mainName: string;
+procedure TLinkbarWcl.BarStopDirWatch;
 begin
-  imProfiles.Clear;
-  mainName := L10NFind('Profile.Main', 'Main');
-  if (FProfiles.Current = '')
-  then imProfiles.Caption := L10NFind('Menu.Profile', 'Profile') + ': ' + mainName
-  else imProfiles.Caption := L10NFind('Menu.Profile', 'Profile') + ': ' + FProfiles.Current;
-
-  Add(mainName, '', ProfileItemClick, FProfiles.Current = '');
-  for name in FProfiles.Names do
-    Add(name, name, ProfileItemClick, SameText(name, FProfiles.Current));
-  Add('-', '', nil);
-  Add(L10NFind('Profile.New', 'New profile...'), '', ProfileNewClick);
-  if (FProfiles.Current <> '')
-  then begin
-    Add(L10NFind('Profile.Rename', 'Rename this profile...'), '', ProfileRenameClick);
-    Add(L10NFind('Profile.Delete', 'Delete this profile'), '', ProfileDeleteClick);
-  end;
-end;
-
-procedure TLinkbarWcl.ProfileItemClick(Sender: TObject);
-begin
-  SwitchProfile(TMenuItem(Sender).Hint);
-end;
-
-procedure TLinkbarWcl.ProfileNewClick(Sender: TObject);
-var name: string;
-begin
-  name := '';
-  FAutoHider.Locked := True;
-  try
-    if not InputQuery(L10NFind('Profile.NewTitle', 'New profile'),
-                      L10NFind('Profile.NamePrompt', 'Profile name (for example Work):'), name)
-    then Exit;
-  finally
-    FAutoHider.Locked := False;
-  end;
-  name := Trim(name);
-  if not TProfileManager.IsValidName(name)
-  then Exit;
-  if DirectoryExists(FProfiles.ProfileDir(name))
-  then begin
-    SwitchProfile(name);
-    Exit;
-  end;
-  if ForceDirectories(FProfiles.ProfileDir(name))
-  then SwitchProfile(name);
-end;
-
-procedure TLinkbarWcl.ProfileRenameClick(Sender: TObject);
-var name, oldName: string;
-    settings: TSettingsFile;
-begin
-  if (FProfiles.Current = '') then Exit;
-  oldName := FProfiles.Current;
-  name := oldName;
-  FAutoHider.Locked := True;
-  try
-    if not InputQuery(L10NFind('Profile.RenameTitle', 'Rename profile'),
-                      L10NFind('Profile.NamePrompt', 'Profile name (for example Work):'), name)
-    then Exit;
-  finally
-    FAutoHider.Locked := False;
-  end;
-  name := Trim(name);
-  if not TProfileManager.IsValidName(name) or SameText(name, oldName)
-     or DirectoryExists(FProfiles.ProfileDir(name))
-  then Exit;
-  // stop watching the folder before renaming it
-  SaveLinks;
-  WorkDir := FProfiles.BaseDir;
-  if RenameFile(ExcludeTrailingPathDelimiter(FProfiles.ProfileDir(oldName)),
-                ExcludeTrailingPathDelimiter(FProfiles.ProfileDir(name)))
-  then FProfiles.Current := name;
-  WorkDir := FProfiles.ProfileDir(FProfiles.Current);
-  settings.Open(FSettingsFileName);
-  settings.Write(INI_PROFILE, FProfiles.Current);
-  settings.Close;
-  ReloadLinks;
-end;
-
-procedure TLinkbarWcl.ProfileDeleteClick(Sender: TObject);
-var name: string;
-begin
-  if (FProfiles.Current = '') then Exit;
-  name := FProfiles.Current;
-  FAutoHider.Locked := True;
-  try
-    if (MessageBox(Handle,
-          PChar(Format(L10NFind('Profile.DeleteConfirm',
-            'Delete the profile "%s"? Its icons go to the Recycle Bin.'), [name])),
-          PChar(APP_NAME_LINKBAR), MB_ICONQUESTION or MB_YESNO) <> IDYES)
-    then Exit;
-  finally
-    FAutoHider.Locked := False;
-  end;
-  SwitchProfile('');
-  SHDeleteOp(Handle, ExcludeTrailingPathDelimiter(FProfiles.ProfileDir(name)), True);
+  StopDirWatch;
 end;
 
 { Content or color of an open group changed: reload its icon on the bar }
@@ -2067,44 +1672,8 @@ begin
 end;
 
 procedure TLinkbarWcl.RenameGroup(const AIndex: Integer);
-const InvalidChars: array[0..8] of Char = ('\', '/', ':', '*', '?', '"', '<', '>', '|');
-var newName, oldPath, newPath: string;
-    ch: Char;
 begin
-  oldPath := ExcludeTrailingPathDelimiter(Items[AIndex].FileName);
-  newName := Items[AIndex].Caption;
-
-  FAutoHider.Locked := True;
-  try
-    if not InputQuery(L10NFind('Group.RenameTitle', 'Rename group'),
-                      L10NFind('Group.RenamePrompt', 'Name:'), newName)
-    then Exit;
-  finally
-    FAutoHider.Locked := False;
-  end;
-
-  newName := Trim(newName);
-  if (newName = '') or SameText(newName, Items[AIndex].Caption)
-  then Exit;
-  for ch in InvalidChars do
-    if (Pos(ch, newName) > 0)
-    then begin
-      MessageDlg(L10NFind('Group.InvalidName', 'The name cannot contain: \ / : * ? " < > |'),
-        mtWarning, [mbOK], 0);
-      Exit;
-    end;
-
-  newPath := WorkDir + newName + ES_GROUP;
-  if DirectoryExists(newPath) or FileExists(newPath)
-  then begin
-    MessageDlg(L10NFind('Group.NameExists', 'A group with this name already exists.'),
-      mtWarning, [mbOK], 0);
-    Exit;
-  end;
-
-  // The folder watcher updates the bar item (rename events)
-  if not RenameFile(oldPath, newPath)
-  then MessageDlg(SysErrorMessage(GetLastError), mtError, [mbOK], 0);
+  FCommands.RenameGroup(AIndex);
 end;
 
 procedure TLinkbarWcl.DoDelete(const AIndex: Integer);
@@ -2211,7 +1780,7 @@ var
   FPopupMenu: HMENU;
   hbrBg: HBRUSH;
 begin
-  BuildProfilesMenu;
+  FProfileMenu.Build(imProfiles, pMenu);
   var isAction := IsItemIndex(FItemPopup) and (Items[FItemPopup] is TItemAction);
 
   // The menu is owner-drawn (no check mark): the text tells the current state
@@ -2443,8 +2012,8 @@ end;
 procedure TLinkbarWcl.UpdateItemSizes;
 var
   r: TRect;
-  w, h: Integer;
   textHeight: Integer;
+  bs: TSize;
 begin
   // Calc text height
   Canvas.Font := Screen.IconFont;
@@ -2453,46 +2022,8 @@ begin
   else textHeight := DrawText(Canvas.Handle, 'Wp', 2, r, DT_SINGLELINE or DT_NOCLIP or DT_CALCRECT);
 
   // Calc margin, icon offset & button size
-  case TextLayout of
-  ETextLayoutLeft, ETextLayoutRight:
-    begin
-      // button size
-      w := FConfig.ItemMargin.cx + FConfig.IconSize + FConfig.TextOffset + FConfig.TextWidth + FConfig.ItemMargin.cx;
-      h := FConfig.ItemMargin.cy + Max(FConfig.IconSize, textHeight) + FConfig.ItemMargin.cy;
-      // icon offset
-      if (TextLayout = ETextLayoutRight)
-      then FIconOffset.X := FConfig.ItemMargin.cx
-      else FIconOffset.X := FConfig.ItemMargin.cx + FConfig.TextWidth + FConfig.TextOffset;
-      FIconOffset.Y := (h - FConfig.IconSize) div 2;
-      // text rect
-      if (TextLayout = ETextLayoutRight)
-      then FTextRect := Bounds( FConfig.ItemMargin.cx + FConfig.IconSize + FConfig.TextOffset, (h - textHeight) div 2, FConfig.TextWidth, textHeight )
-      else FTextRect := Bounds( FConfig.ItemMargin.cx, (h - textHeight) div 2, FConfig.TextWidth, textHeight );
-    end;
-  ETextLayoutTop, ETextLayoutBottom:
-    begin
-      // button size
-      w := FConfig.ItemMargin.cx + Max(FConfig.IconSize, FConfig.TextWidth) + FConfig.ItemMargin.cx;
-      h := FConfig.ItemMargin.cy + FConfig.IconSize + FConfig.TextOffset + textHeight + FConfig.ItemMargin.cy;
-      // icon offset
-      FIconOffset.X := (w - FConfig.IconSize) div 2;
-      if (TextLayout = ETextLayoutBottom)
-      then FIconOffset.Y := FConfig.ItemMargin.cy
-      else FIconOffset.Y := FConfig.ItemMargin.cy + textHeight + FConfig.TextOffset;
-      // text rect
-      if (TextLayout = ETextLayoutBottom)
-      then FTextRect := Bounds( FConfig.TextOffset, FConfig.ItemMargin.cy + FConfig.IconSize + FConfig.TextOffset, w - 2*FConfig.TextOffset, textHeight )
-      else FTextRect := Bounds( FConfig.TextOffset, FConfig.ItemMargin.cy, w - 2*FConfig.TextOffset, textHeight );
-    end;
-  else
-    begin
-      w := FConfig.ItemMargin.cx + FConfig.IconSize + FConfig.ItemMargin.cx;
-      h := FConfig.ItemMargin.cy + FConfig.IconSize + FConfig.ItemMargin.cy;
-      FIconOffset := Point(FConfig.ItemMargin.cx, FConfig.ItemMargin.cy);
-    end;
-  end;
-
-  ButtonSize := TSize.Create(w, h);
+  TItemMetrics.Calc(FConfig, textHeight, bs, FIconOffset, FTextRect);
+  ButtonSize := bs;
 end;
 
 procedure TLinkbarWcl.SetIconSize(AValue: integer);
@@ -2953,8 +2484,8 @@ begin
       if (GetKeyState(VK_CONTROL) < 0)
       then begin
         if (SmallInt(Msg.WParamHi) < 0)
-        then CycleProfile(1)
-        else CycleProfile(-1);
+        then FProfileMenu.Cycle(1)
+        else FProfileMenu.Cycle(-1);
         Msg.Result := 0;
         Exit;
       end;
@@ -3197,21 +2728,10 @@ begin
   UpdateWindowSize;
 end;
 
-{ New empty group: sub-folder "<name>.group". The folder watcher adds it to the bar.
-  Drag shortcuts from the bar onto the group icon to move them inside. }
+{ New empty group: sub-folder "<name>.group". The folder watcher adds it to the bar }
 procedure TLinkbarWcl.imNewGroupClick(Sender: TObject);
-var baseName, dirName: string;
-    n: Integer;
 begin
-  baseName := L10NFind('Menu.GroupDefaultName', 'Group');
-  dirName := WorkDir + baseName + ES_GROUP;
-  n := 2;
-  while DirectoryExists(dirName) or FileExists(dirName) do
-  begin
-    dirName := WorkDir + baseName + ' ' + IntToStr(n) + ES_GROUP;
-    Inc(n);
-  end;
-  ForceDirectories(dirName);
+  FCommands.NewGroup;
 end;
 
 procedure TLinkbarWcl.imOpenWorkdirClick(Sender: TObject);
@@ -3220,35 +2740,8 @@ begin
 end;
 
 procedure TLinkbarWcl.imRemoveBarClick(Sender: TObject);
-var td: TTaskDialog;
 begin
-  td := TTaskDialog.Create(Self);
-  FAutoHider.Locked := True;
-  try
-    td.Caption := ' ' + APP_NAME_LINKBAR;
-    td.MainIcon := tdiNone;
-    td.Title := Format( L10NFind('Delete.Title', 'You remove the linkbar "%s"'), [PanelName] );
-    td.Text := Format( L10NFind('Delete.Text', 'Working directory: %s'), [FProfiles.BaseDir] );
-    td.VerificationText := L10NFind('Delete.Verification', 'Delete working directory') + Format('%*s', [24, ' ']);
-    td.CommonButtons := [tcbOk, tcbCancel];
-    td.DefaultButton := tcbCancel;
-
-    if (td.Execute)
-       and (td.ModalResult = mrOk)
-    then begin
-      FRemoved := True;
-      DeleteFile(FSettingsFileName);
-      if (tfVerificationFlagChecked in td.Flags)
-      then begin
-        StopDirWatch;
-        SHDeleteOp(Handle, FProfiles.BaseDir, True);
-      end;
-      PostQuitMessage(0);
-    end;
-  finally
-    FAutoHider.Locked := False;
-    td.Free;
-  end;
+  FCommands.RemoveBar;
 end;
 
 procedure TLinkbarWcl.imSortAlphabetClick(Sender: TObject);
@@ -3594,105 +3087,17 @@ begin
   AOffset := Point(FMousePosDown.X - ItemRect.Left, FMousePosDown.Y - ItemRect.Top);
 end;
 
-var
-  _LastModifiedItemHash: Cardinal = 0;
-  _RenamedOldItemHash: Cardinal = 0;
-
 procedure TLinkbarWcl.DirWatchChange(const Sender: TObject; const AAction: TWatchAction; const AFileName: string);
-
-  function FindItemByHash(AHash: Cardinal): Integer;
-  begin
-    for var i := 0 to Items.Count-1
-    do if Items[i].Hash = AHash
-       then Exit(i);
-    Result := ITEM_NONE;
-  end;
-
-var ext: string;
-    hash: Cardinal;
-    index: integer;
 begin
   inherited;
-  // Skip unsupported files
-  ext := ExtractFileExt(AFileName);
-  if not MatchText(ext, ES_ITEMS_ARRAY) then Exit;
-
-  tmrUpdate.Enabled := False;
-
-  case AAction of
-  waAdded:
-  begin
-    var item := CreateItemForFile(AFileName);
-    item.Hash := StrToHash(AFileName);
-    item.FileName := WorkDir + AFileName;
-    item.NeedLoad := True;
-    if (FDropTarget.Position = ITEM_NONE)
-    then Items.Add(item)
-    else Items.Insert(FDropTarget.Position, item);
-  end;
-  waRemoved:
-  begin
-    index := FindItemByHash(StrToHash(AFileName));
-    if (index <> ITEM_NONE)
-    then DeleteItem(index);
-  end;
-  waModified:
-  begin
-    hash := StrToHash(AFileName);
-    if (_LastModifiedItemHash <> hash)
-    then begin
-      _LastModifiedItemHash := hash;
-      index := FindItemByHash(hash);
-      if (index <> ITEM_NONE)
-      then Items[index].NeedLoad := True;
-    end;
-  end;
-  waRenamedOld:
-  begin
-    _RenamedOldItemHash := StrToHash(AFileName);
-  end;
-  waRenamedNew:
-  begin
-    index := FindItemByHash(_RenamedOldItemHash);
-    if (index <> ITEM_NONE)
-    then begin
-      var item := Items[index];
-      item.FileName := WorkDir + AFileName;
-      item.NeedLoad := True;
-      _RenamedOldItemHash := 0;
-    end;
-  end;
-  end;
-
-  tmrUpdate.Enabled := True;
+  if Assigned(FLinkList)
+  then FLinkList.FolderChanged(AAction, AFileName);
 end;
 
 procedure TLinkbarWcl.tmrUpdateTimer(Sender: TObject);
 begin
-  tmrUpdate.Enabled := False;
-
-  for var i := Items.Count-1 downto 0 do
-  begin
-    const item = Items[i];
-    if item.NeedLoad
-    then begin
-      if item.LoadFromFile(item.FileName)
-      then Items.LoadIcon(item)
-      else DeleteItem(i);
-    end
-  end;
-
-  if FConfig.SortAlphabetically
-  then Items.Sort;
-  Items.PinnedToEnd;
-
-  _LastModifiedItemHash := 0;
-  _RenamedOldItemHash := 0;
-
-  SetDropPosition( Point(-1, -1) );
-  oAppBar.AppBarPosChanged;
-  // Taskbar icon mode: the automatic icon shows the first icons of the bar
-  UpdateTaskbarIcon;
+  if Assigned(FLinkList)
+  then FLinkList.RescanTick;
 end;
 
 procedure TLinkbarWcl.DirWatchError(const Sender: TObject;

@@ -19,7 +19,6 @@ type
   // What the launcher mode needs from the bar window
   ILauncherHost = interface(ILinkbarHost)
     ['{2F8B5D63-A1C4-4E97-8D30-6B7E9C1A5F42}']
-    function BarPanelName: string;
     // Closes the popups and hides the bar window (only the taskbar button stays)
     procedure BarHideForLauncher;
     // Shows the bar window again
