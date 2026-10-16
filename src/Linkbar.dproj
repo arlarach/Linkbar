@@ -145,6 +145,9 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="Linkbar.Actions.pas"/>
         <DCCReference Include="Linkbar.TaskbarButton.pas"/>
         <DCCReference Include="Linkbar.IconPicker.pas"/>
+        <DCCReference Include="Linkbar.Bar.MenuHook.pas"/>
+        <DCCReference Include="Linkbar.Bar.SaveQueue.pas"/>
+        <DCCReference Include="Linkbar.Bar.Profiles.pas"/>
         <None Include="linkbar.inc"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

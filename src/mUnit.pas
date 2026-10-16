@@ -15,7 +15,7 @@ uses
   System.UITypes, Menus, Vcl.ExtCtrls, Winapi.ShlObj,
   DDForms, Cromis.DirectoryWatch,
   AccessBar, LBToolbar, Linkbar.Consts, Linkbar.Hint, Linkbar.Taskbar, HotKey,
-  Linkbar.Graphics;
+  Linkbar.Graphics, Linkbar.Bar.SaveQueue, Linkbar.Bar.Profiles;
 
 type
   TLinkbarWcl = class(TLinkbarCustomFrom)
@@ -107,8 +107,8 @@ type
     FTaskbarIcon: string;        // icon of the taskbar button: '' = automatic, "file,index"
     FHideOnFullscreen: Boolean;
     FHiddenByFullscreen: Boolean;
-    FLinksBaseDir: string;       // links folder of the main profile
-    FProfile: string;            // current profile ('' = main)
+    FProfiles: TProfileManager;  // profile folders (current profile '' = main)
+    FSaveQueue: TFileSaveQueue;  // list files write queue (retries when locked)
     imNewAction, imEditAction, imDeleteAction, imActionLine, imProfiles, imPinned, imPinAllActions, imUnpinAll, imAnimateCollapse, imAutoCollapse: TMenuItem;
     FCpuLoad, FRamLoad: Integer;       // 0..100
     FPrevIdle, FPrevKernel, FPrevUser: UInt64;
@@ -262,14 +262,8 @@ type
     procedure LoadSettings;
     procedure SaveLinks;
   private
-    FPendingFiles: TStringList;   // files whose write failed (locked by Drive...), retried later
-    FPendingTexts: TStringList;   // content for each pending file (same index)
-    FSaveRetries: Integer;
-    function WriteLinesFile(const AFileName, AText: string; const ATries: Integer): Boolean;
-    procedure ForgetPendingSave(const AFileName: string);
-    procedure QueueSave(const AFileName, AText: string);
-    procedure RetryPendingSaves;
-    procedure ShowSaveFailed;
+    procedure ShowSaveFailed(Sender: TObject);
+    procedure SaveRetryScheduled(Sender: TObject);
   private
     BitBucketNotify: Cardinal;
     procedure UpdateBitBuckets;
@@ -299,9 +293,6 @@ type
     procedure LoadPinned;
     function PinnedLength(const AVertical: Boolean): Integer;
     procedure imDeleteActionClick(Sender: TObject);
-    function ProfilesDir: string;
-    function ProfileDir(const AName: string): string;
-    function GetProfileNames: TArray<string>;
     procedure ReloadLinks;
     procedure SwitchProfile(const AName: string);
     procedure CycleProfile(const ADelta: Integer);
@@ -425,7 +416,7 @@ uses
   ExplorerMenu, Linkbar.Shell, Linkbar.Theme,
   Linkbar.OS, Linkbar.L10n, JumpLists.Form, JumpLists.Api_2, RenameDialog,
   Linkbar.SettingsForm, Linkbar.Settings, Linkbar.GroupForm, Linkbar.ThumbForm,
-  Linkbar.Actions, Linkbar.TaskbarButton, Linkbar.IconPicker;
+  Linkbar.Actions, Linkbar.TaskbarButton, Linkbar.IconPicker, Linkbar.Bar.MenuHook;
 
 const
   bf: TBlendFunction = (BlendOp: AC_SRC_OVER; BlendFlags: 0;
@@ -442,7 +433,6 @@ const
   TIMER_SAVE_RETRY = 21;
   TIMER_SAVE_NOTICE = 22;
   SAVE_RETRY_MS = 5000;
-  SAVE_RETRY_MAX = 6;
   TIMER_COLLAPSE_ANIM = 23;
   TIMER_AUTOCOLLAPSE = 24;
   COLLAPSE_ANIM_MS = 180;
@@ -1012,13 +1002,13 @@ begin
   settings.Open(FSettingsFileName);
   // Read
   WorkDir               := settings.Read(INI_DIR_LINKS, DEF_DIR_LINKS);
-  FLinksBaseDir         := WorkDir;  // expanded by SetWorkDir
-  FProfile              := Trim(settings.Read(INI_PROFILE, ''));
-  if (FProfile <> '')
+  FProfiles.BaseDir     := WorkDir;  // expanded by SetWorkDir
+  FProfiles.Current     := Trim(settings.Read(INI_PROFILE, ''));
+  if (FProfiles.Current <> '')
   then begin
-    if DirectoryExists(ProfileDir(FProfile))
-    then WorkDir := ProfileDir(FProfile)
-    else FProfile := '';
+    if DirectoryExists(FProfiles.ProfileDir(FProfiles.Current))
+    then WorkDir := FProfiles.ProfileDir(FProfiles.Current)
+    else FProfiles.Current := '';
   end;
   FHideOnFullscreen     := settings.Read(INI_HIDE_FULLSCREEN, DEF_HIDE_FULLSCREEN);
   FCollapseOnFullscreen := settings.Read(INI_COLLAPSE_FULLSCREEN, DEF_COLLAPSE_FULLSCREEN);
@@ -1106,114 +1096,12 @@ begin
   HotkeyInfo := hki;
 end;
 
-{ The folder may be synced (Drive, OneDrive) and the file locked for a moment }
-function TLinkbarWcl.WriteLinesFile(const AFileName, AText: string; const ATries: Integer): Boolean;
+procedure TLinkbarWcl.SaveRetryScheduled(Sender: TObject);
 begin
-  var sl := TStringList.Create;
-  try
-    sl.Text := AText;
-    for var attempt := 1 to ATries
-    do begin
-      try
-        sl.SaveToFile(AFileName, TEncoding.UTF8);
-        Exit(True);
-      except
-        if (attempt < ATries)
-        then Sleep(150);
-      end;
-    end;
-    Result := False;
-  finally
-    sl.Free;
-  end;
-end;
-
-procedure TLinkbarWcl.ForgetPendingSave(const AFileName: string);
-begin
-  if not Assigned(FPendingFiles)
-  then Exit;
-  var i := FPendingFiles.IndexOf(AFileName);
-  if (i >= 0)
-  then begin
-    FPendingFiles.Delete(i);
-    FPendingTexts.Delete(i);
-  end;
-end;
-
-{ Write only when the content changed. If the file stays locked, keep it
-  pending and retry later (TIMER_SAVE_RETRY) instead of showing an error }
-procedure TLinkbarWcl.QueueSave(const AFileName, AText: string);
-begin
-  if FileExists(AFileName)
-  then begin
-    var current := TStringList.Create;
-    try
-      try
-        current.LoadFromFile(AFileName, TEncoding.UTF8);
-        if (current.Text = AText)
-        then begin
-          ForgetPendingSave(AFileName);
-          Exit;
-        end;
-      except
-        // locked: try to write anyway
-      end;
-    finally
-      current.Free;
-    end;
-  end;
-
-  if WriteLinesFile(AFileName, AText, 5)
-  then begin
-    ForgetPendingSave(AFileName);
-    Exit;
-  end;
-
-  if not Assigned(FPendingFiles)
-  then begin
-    FPendingFiles := TStringList.Create;
-    FPendingTexts := TStringList.Create;
-  end;
-  var i := FPendingFiles.IndexOf(AFileName);
-  if (i >= 0)
-  then FPendingTexts[i] := AText
-  else begin
-    FPendingFiles.Add(AFileName);
-    FPendingTexts.Add(AText);
-  end;
-  FSaveRetries := 0;
   SetTimer(Handle, TIMER_SAVE_RETRY, SAVE_RETRY_MS, nil);
 end;
 
-procedure TLinkbarWcl.RetryPendingSaves;
-begin
-  KillTimer(Handle, TIMER_SAVE_RETRY);
-  if not Assigned(FPendingFiles)
-  then Exit;
-
-  for var i := FPendingFiles.Count-1 downto 0
-  do begin
-    if WriteLinesFile(FPendingFiles[i], FPendingTexts[i], 1)
-    then begin
-      FPendingFiles.Delete(i);
-      FPendingTexts.Delete(i);
-    end;
-  end;
-
-  if (FPendingFiles.Count = 0)
-  then Exit;
-
-  Inc(FSaveRetries);
-  if (FSaveRetries < SAVE_RETRY_MAX)
-  then SetTimer(Handle, TIMER_SAVE_RETRY, SAVE_RETRY_MS, nil)
-  else begin
-    FPendingFiles.Clear;
-    FPendingTexts.Clear;
-    ShowSaveFailed;
-  end;
-end;
-
-procedure TLinkbarWcl.ShowSaveFailed;
+procedure TLinkbarWcl.ShowSaveFailed(Sender: TObject);
 begin
   var pt := Point(Width div 2, Height div 2);
   MapWindowPoints(Handle, HWND_DESKTOP, pt, 1);
@@ -1231,7 +1119,7 @@ begin
       for var item in Items
       do sl.Add(ExtractFileName(item.FileName));
 
-      QueueSave(WorkDir + LINKSLIST_FILE_NAME, sl.Text);
+      FSaveQueue.Save(WorkDir + LINKSLIST_FILE_NAME, sl.Text);
 
       // Items that stay visible when the bar is collapsed
       sl.Clear;
@@ -1240,9 +1128,9 @@ begin
          then sl.Add(ExtractFileName(item.FileName));
 
       if (sl.Count > 0)
-      then QueueSave(WorkDir + PINNED_FILE_NAME, sl.Text)
+      then FSaveQueue.Save(WorkDir + PINNED_FILE_NAME, sl.Text)
       else begin
-        ForgetPendingSave(WorkDir + PINNED_FILE_NAME);
+        FSaveQueue.Forget(WorkDir + PINNED_FILE_NAME);
         if FileExists(WorkDir + PINNED_FILE_NAME)
         then DeleteFile(WorkDir + PINNED_FILE_NAME);
       end;
@@ -1291,7 +1179,7 @@ begin
     settings.Write(INI_ANIMATE_COLLAPSE, FAnimateCollapse);
     settings.Write(INI_AUTOCOLLAPSE, FAutoCollapseSecs);
     settings.Write(INI_TASKBAR_ICON, FTaskbarIcon);
-    settings.Write(INI_PROFILE, FProfile);
+    settings.Write(INI_PROFILE, FProfiles.Current);
     settings.Write(INI_EDGE, Integer(Align));
     settings.Write(INI_AUTOHIDE, AutoHide);
     settings.Write(INI_AUTOHIDE_TRANSPARENCY, FAutoHideTransparency);
@@ -1351,81 +1239,13 @@ begin
   then MessageBox(Handle, PChar(SysErrorMessage(GetLastError)), 'Error', MB_ICONWARNING or MB_OK);
 end;
 
-{ --- Menús sin borde (estilo Sci-Fi) --- }
-const
-  LB_EVENT_SYSTEM_MENUPOPUPSTART = $0006;
-  LB_WINEVENT_OUTOFCONTEXT = $0000;
-  LB_DWMWA_WINDOW_CORNER_PREFERENCE = 33;
-  LB_DWMWA_BORDER_COLOR = 34;
-  LB_DWMWCP_DONOTROUND = 1;
-  LB_DWMWA_COLOR_NONE = $FFFFFFFE;
-
-type
-  TLbWinEventProc = procedure(hWinEventHook: THandle; event: DWORD; hwnd: HWND;
-    idObject, idChild: LongInt; idEventThread, dwmsEventTime: DWORD); stdcall;
-
-function LbSetWinEventHook(eventMin, eventMax: DWORD; hmodWinEventProc: HMODULE;
-  pfnWinEventProc: TLbWinEventProc; idProcess, idThread, dwFlags: DWORD): THandle; stdcall;
-  external user32 name 'SetWinEventHook';
-function LbUnhookWinEvent(hWinEventHook: THandle): BOOL; stdcall;
-  external user32 name 'UnhookWinEvent';
-function LbDwmSetWindowAttribute(hwnd: HWND; dwAttribute: DWORD; pvAttribute: Pointer;
-  cbAttribute: DWORD): HRESULT; stdcall;
-  external 'dwmapi.dll' name 'DwmSetWindowAttribute';
-
-var
-  LbMenuHook: THandle = 0;
-  LbMenuHookRefs: Integer = 0;
-
-{ Quita el marco (borde blanco) de la ventana del menú #32768 }
-procedure LbMenuWinEvent(hWinEventHook: THandle; event: DWORD; hwnd: HWND;
-  idObject, idChild: LongInt; idEventThread, dwmsEventTime: DWORD); stdcall;
-var
-  cls: array[0..31] of Char;
-  st, exst: LONG_PTR;
-  v: DWORD;
-begin
-  if (hwnd = 0) or (GetClassName(hwnd, cls, Length(cls)) = 0) or (cls <> '#32768')
-  then Exit;
-
-  st := GetWindowLongPtr(hwnd, GWL_STYLE);
-  SetWindowLongPtr(hwnd, GWL_STYLE, st and not (WS_BORDER or WS_THICKFRAME or WS_DLGFRAME));
-  exst := GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-  SetWindowLongPtr(hwnd, GWL_EXSTYLE,
-    exst and not (WS_EX_WINDOWEDGE or WS_EX_CLIENTEDGE or WS_EX_DLGMODALFRAME or WS_EX_STATICEDGE));
-
-  // Windows 11: sin contorno DWM y sin esquinas redondeadas (ignorado en versiones anteriores)
-  v := LB_DWMWA_COLOR_NONE;
-  LbDwmSetWindowAttribute(hwnd, LB_DWMWA_BORDER_COLOR, @v, SizeOf(v));
-  v := LB_DWMWCP_DONOTROUND;
-  LbDwmSetWindowAttribute(hwnd, LB_DWMWA_WINDOW_CORNER_PREFERENCE, @v, SizeOf(v));
-
-  SetWindowPos(hwnd, 0, 0, 0, 0, 0,
-    SWP_FRAMECHANGED or SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE);
-end;
-
-procedure LbInstallMenuHook;
-begin
-  Inc(LbMenuHookRefs);
-  if (LbMenuHook = 0)
-  then LbMenuHook := LbSetWinEventHook(LB_EVENT_SYSTEM_MENUPOPUPSTART, LB_EVENT_SYSTEM_MENUPOPUPSTART,
-    0, LbMenuWinEvent, GetCurrentProcessId, GetCurrentThreadId, LB_WINEVENT_OUTOFCONTEXT);
-end;
-
-procedure LbRemoveMenuHook;
-begin
-  Dec(LbMenuHookRefs);
-  if (LbMenuHookRefs <= 0) and (LbMenuHook <> 0)
-  then begin
-    LbUnhookWinEvent(LbMenuHook);
-    LbMenuHook := 0;
-    LbMenuHookRefs := 0;
-  end;
-end;
-
 procedure TLinkbarWcl.FormCreate(Sender: TObject);
 begin
-  LbInstallMenuHook;
+  TMenuBorderHook.Install;
+  FProfiles := TProfileManager.Create;
+  FSaveQueue := TFileSaveQueue.Create;
+  FSaveQueue.OnScheduleRetry := SaveRetryScheduled;
+  FSaveQueue.OnFailed := ShowSaveFailed;
   FCreated := False;
   CreateBitmaps;
 
@@ -1549,7 +1369,7 @@ end;
 
 procedure TLinkbarWcl.FormDestroy(Sender: TObject);
 begin
-  LbRemoveMenuHook;
+  TMenuBorderHook.Remove;
   UnregisterBitBucketNotify(BitBucketNotify);
   UnregisterHotkeyNotify(Handle);
 
@@ -1561,8 +1381,8 @@ begin
 
   if (not FRemoved)
   then SaveLinks;
-  FreeAndNil(FPendingFiles);
-  FreeAndNil(FPendingTexts);
+  FreeAndNil(FSaveQueue);
+  FreeAndNil(FProfiles);
 
   ThemeCloseData;
 
@@ -2593,39 +2413,6 @@ end;
 
 { ---------- profiles ---------- }
 
-function TLinkbarWcl.ProfilesDir: string;
-begin
-  Result := IncludeTrailingPathDelimiter(FLinksBaseDir) + PROFILES_DIR_NAME + '\';
-end;
-
-function TLinkbarWcl.ProfileDir(const AName: string): string;
-begin
-  if (AName = '')
-  then Result := IncludeTrailingPathDelimiter(FLinksBaseDir)
-  else Result := ProfilesDir + AName + '\';
-end;
-
-function TLinkbarWcl.GetProfileNames: TArray<string>;
-var sr: TSearchRec;
-    sl: TStringList;
-begin
-  sl := TStringList.Create;
-  try
-    if (FindFirst(ProfilesDir + '*', faDirectory, sr) = 0)
-    then begin
-      repeat
-        if ((sr.Attr and faDirectory) <> 0) and (sr.Name <> '.') and (sr.Name <> '..')
-        then sl.Add(sr.Name);
-      until (FindNext(sr) <> 0);
-      FindClose(sr);
-    end;
-    sl.Sort;
-    Result := sl.ToStringArray;
-  finally
-    sl.Free;
-  end;
-end;
-
 procedure TLinkbarWcl.ReloadLinks;
 begin
   FHotIndex := ITEM_NONE;
@@ -2643,31 +2430,23 @@ procedure TLinkbarWcl.SwitchProfile(const AName: string);
 var dir: string;
     settings: TSettingsFile;
 begin
-  if SameText(AName, FProfile) then Exit;
-  dir := ProfileDir(AName);
+  if SameText(AName, FProfiles.Current) then Exit;
+  dir := FProfiles.ProfileDir(AName);
   if not (DirectoryExists(dir) or ForceDirectories(dir)) then Exit;
   CloseThumbs;
   ToolTip.Cancel;
   SaveLinks;
-  FProfile := AName;
+  FProfiles.Current := AName;
   settings.Open(FSettingsFileName);
-  settings.Write(INI_PROFILE, FProfile);
+  settings.Write(INI_PROFILE, FProfiles.Current);
   settings.Close;
   WorkDir := dir;
   ReloadLinks;
 end;
 
 procedure TLinkbarWcl.CycleProfile(const ADelta: Integer);
-var names: TArray<string>;
-    i, cur: Integer;
 begin
-  names := [''] + GetProfileNames;
-  if (Length(names) < 2) then Exit;
-  cur := 0;
-  for i := 0 to High(names) do
-    if SameText(names[i], FProfile) then cur := i;
-  cur := (cur + ADelta + Length(names)) mod Length(names);
-  SwitchProfile(names[cur]);
+  SwitchProfile(FProfiles.Neighbour(ADelta));
 end;
 
 procedure TLinkbarWcl.BuildProfilesMenu;
@@ -2686,16 +2465,16 @@ var name, mainName: string;
 begin
   imProfiles.Clear;
   mainName := L10NFind('Profile.Main', 'Main');
-  if (FProfile = '')
+  if (FProfiles.Current = '')
   then imProfiles.Caption := L10NFind('Menu.Profile', 'Profile') + ': ' + mainName
-  else imProfiles.Caption := L10NFind('Menu.Profile', 'Profile') + ': ' + FProfile;
+  else imProfiles.Caption := L10NFind('Menu.Profile', 'Profile') + ': ' + FProfiles.Current;
 
-  Add(mainName, '', ProfileItemClick, FProfile = '');
-  for name in GetProfileNames do
-    Add(name, name, ProfileItemClick, SameText(name, FProfile));
+  Add(mainName, '', ProfileItemClick, FProfiles.Current = '');
+  for name in FProfiles.Names do
+    Add(name, name, ProfileItemClick, SameText(name, FProfiles.Current));
   Add('-', '', nil);
   Add(L10NFind('Profile.New', 'New profile...'), '', ProfileNewClick);
-  if (FProfile <> '')
+  if (FProfiles.Current <> '')
   then begin
     Add(L10NFind('Profile.Rename', 'Rename this profile...'), '', ProfileRenameClick);
     Add(L10NFind('Profile.Delete', 'Delete this profile'), '', ProfileDeleteClick);
@@ -2705,16 +2484,6 @@ end;
 procedure TLinkbarWcl.ProfileItemClick(Sender: TObject);
 begin
   SwitchProfile(TMenuItem(Sender).Hint);
-end;
-
-function ValidProfileName(const AName: string): Boolean;
-const InvalidChars = '\/:*?"<>|';
-var ch: Char;
-begin
-  Result := (AName <> '') and (AName <> '.') and (AName <> '..');
-  if Result then
-    for ch in InvalidChars do
-      if (Pos(ch, AName) > 0) then Exit(False);
 end;
 
 procedure TLinkbarWcl.ProfileNewClick(Sender: TObject);
@@ -2730,14 +2499,14 @@ begin
     FLockAutoHide := False;
   end;
   name := Trim(name);
-  if not ValidProfileName(name)
+  if not TProfileManager.IsValidName(name)
   then Exit;
-  if DirectoryExists(ProfileDir(name))
+  if DirectoryExists(FProfiles.ProfileDir(name))
   then begin
     SwitchProfile(name);
     Exit;
   end;
-  if ForceDirectories(ProfileDir(name))
+  if ForceDirectories(FProfiles.ProfileDir(name))
   then SwitchProfile(name);
 end;
 
@@ -2745,8 +2514,8 @@ procedure TLinkbarWcl.ProfileRenameClick(Sender: TObject);
 var name, oldName: string;
     settings: TSettingsFile;
 begin
-  if (FProfile = '') then Exit;
-  oldName := FProfile;
+  if (FProfiles.Current = '') then Exit;
+  oldName := FProfiles.Current;
   name := oldName;
   FLockAutoHide := True;
   try
@@ -2757,18 +2526,18 @@ begin
     FLockAutoHide := False;
   end;
   name := Trim(name);
-  if not ValidProfileName(name) or SameText(name, oldName)
-     or DirectoryExists(ProfileDir(name))
+  if not TProfileManager.IsValidName(name) or SameText(name, oldName)
+     or DirectoryExists(FProfiles.ProfileDir(name))
   then Exit;
   // stop watching the folder before renaming it
   SaveLinks;
-  WorkDir := FLinksBaseDir;
-  if RenameFile(ExcludeTrailingPathDelimiter(ProfileDir(oldName)),
-                ExcludeTrailingPathDelimiter(ProfileDir(name)))
-  then FProfile := name;
-  WorkDir := ProfileDir(FProfile);
+  WorkDir := FProfiles.BaseDir;
+  if RenameFile(ExcludeTrailingPathDelimiter(FProfiles.ProfileDir(oldName)),
+                ExcludeTrailingPathDelimiter(FProfiles.ProfileDir(name)))
+  then FProfiles.Current := name;
+  WorkDir := FProfiles.ProfileDir(FProfiles.Current);
   settings.Open(FSettingsFileName);
-  settings.Write(INI_PROFILE, FProfile);
+  settings.Write(INI_PROFILE, FProfiles.Current);
   settings.Close;
   ReloadLinks;
 end;
@@ -2776,8 +2545,8 @@ end;
 procedure TLinkbarWcl.ProfileDeleteClick(Sender: TObject);
 var name: string;
 begin
-  if (FProfile = '') then Exit;
-  name := FProfile;
+  if (FProfiles.Current = '') then Exit;
+  name := FProfiles.Current;
   FLockAutoHide := True;
   try
     if (MessageBox(Handle,
@@ -2789,7 +2558,7 @@ begin
     FLockAutoHide := False;
   end;
   SwitchProfile('');
-  SHDeleteOp(Handle, ExcludeTrailingPathDelimiter(ProfileDir(name)), True);
+  SHDeleteOp(Handle, ExcludeTrailingPathDelimiter(FProfiles.ProfileDir(name)), True);
 end;
 
 { Content or color of an open group changed: reload its icon on the bar }
@@ -3234,7 +3003,7 @@ end;
 
 procedure TLinkbarWcl.WMInitMenuPopup(var Message: TWMInitMenuPopup);
 begin
-  // El borde del menú se quita en LbMenuWinEvent (WinEventHook de menús)
+  // El borde del menú se quita en TMenuBorderHook (WinEventHook de menús)
   inherited;
 end;
 
@@ -3903,7 +3672,9 @@ begin
             end;
           TIMER_SAVE_RETRY:
             begin
-              RetryPendingSaves;
+              KillTimer(Handle, TIMER_SAVE_RETRY);
+              if Assigned(FSaveQueue)
+              then FSaveQueue.Retry;
               Exit;
             end;
           TIMER_SAVE_NOTICE:
@@ -4124,7 +3895,7 @@ begin
     td.Caption := ' ' + APP_NAME_LINKBAR;
     td.MainIcon := tdiNone;
     td.Title := Format( L10NFind('Delete.Title', 'You remove the linkbar "%s"'), [PanelName] );
-    td.Text := Format( L10NFind('Delete.Text', 'Working directory: %s'), [FLinksBaseDir] );
+    td.Text := Format( L10NFind('Delete.Text', 'Working directory: %s'), [FProfiles.BaseDir] );
     td.VerificationText := L10NFind('Delete.Verification', 'Delete working directory') + Format('%*s', [24, ' ']);
     td.CommonButtons := [tcbOk, tcbCancel];
     td.DefaultButton := tcbCancel;
@@ -4137,7 +3908,7 @@ begin
       if (tfVerificationFlagChecked in td.Flags)
       then begin
         StopDirWatch;
-        SHDeleteOp(Handle, FLinksBaseDir, True);
+        SHDeleteOp(Handle, FProfiles.BaseDir, True);
       end;
       PostQuitMessage(0);
     end;
