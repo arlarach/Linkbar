@@ -18,7 +18,7 @@ uses
   Linkbar.Graphics, Linkbar.Bar.Host, Linkbar.Bar.SaveQueue, Linkbar.Bar.Profiles,
   Linkbar.Bar.SysWidgets, Linkbar.Bar.Collapse, Linkbar.Bar.Fullscreen,
   Linkbar.Bar.Thumbs, Linkbar.Bar.Running, Linkbar.Bar.Launcher,
-  Linkbar.Bar.Pinned, Linkbar.Bar.ActionButtons, Linkbar.Bar.Zoom, Linkbar.Bar.Dock, Linkbar.Bar.DropTarget, Linkbar.Bar.Painter, Linkbar.Bar.PopupMenu;
+  Linkbar.Bar.Pinned, Linkbar.Bar.ActionButtons, Linkbar.Bar.Zoom, Linkbar.Bar.Dock, Linkbar.Bar.DropTarget, Linkbar.Bar.Painter, Linkbar.Bar.PopupMenu, Linkbar.Bar.Config;
 
 type
   TLinkbarWcl = class(TLinkbarCustomFrom, ILinkbarHost, ICollapseHost, IFullscreenHost, IThumbsHost, ILauncherHost, IPinnedHost, IActionButtonsHost, IDockHost, IDropTargetHost)
@@ -83,16 +83,9 @@ type
     FMouseDragItem: Boolean;
     FBeforeDragBounds: TRect;
     FDragingItem: Boolean;
-    FAutoHide: Boolean;
-    FAutoHideTransparency: Boolean;
-    FAutoShowMode: TAutoShowMode;
     FButtonSize: TSize;
-    FEnableAeroGlass: Boolean;
     FGripSize: Integer;
-    FTooltipShow: Boolean;
-    FModernStyle: Boolean;
     FExtDragIcon: HBITMAP;
-    FBarStyle: Integer;          // BAR_STYLE_NORMAL / BAR_STYLE_DOCK
     FZoom: TBarZoom;             // magnification of the dock
     FDock: TBarDock;             // dock style
     FThumbs: TThumbController;  // live thumbnails
@@ -106,37 +99,14 @@ type
     FSaveQueue: TFileSaveQueue;  // list files write queue (retries when locked)
     imNewAction, imEditAction, imDeleteAction, imActionLine, imProfiles, imPinned, imPinAllActions, imUnpinAll, imAnimateCollapse, imAutoCollapse: TMenuItem;
     FSysWidgets: TSysWidgets;          // CPU / RAM widgets
+    FConfig: TBarConfig;         // settings kept in the settings file
     FExtDragIconSize: Integer;
     FHotkeyInfo: THotkeyInfo;
-    FItemMargin: TSize;
-    FIconSize: Integer;
-    FIsLightStyle: Boolean;
-    FItemOrder: TItemOrder;
-    FJumplistShowMode: TJumplistShowMode;
-    FJumplistRecentMax: Integer;
-    FTransparencyMode: TTransparencyMode;
-    FLook: TLook;
-    FLockLinkbar: Boolean;
     FLockHotIndex: Boolean;
-    FCorner1GapWidth, FCorner2GapWidth: Integer;
-    FSortAlphabetically: Boolean;
-    FStayOnTop: Boolean;
-    FBackgroundColor: Cardinal;
     FSysBackgroundColor: Cardinal;
-    FTextColor: Cardinal;
-    FUseBkgndColor: Boolean;
-    FUseTextColor: Boolean;
-    FGlowSize: Integer;
-    FLayout: TPanelLayout;
-    FAlign: TPanelAlign;
-    FTextWidth: Integer;
-    FTextOffset: Integer;
-    FTextLayout: TTextLayout;
     FIconOffset: TPoint;
     FTextRect: TRect;
     FPrevForegroundWnd: HWND;
-    FSeparatorWidth: Integer;
-    FSeparatorStyle: TSeparatorStyle;
     FCollapse: TBarCollapse;      // collapse / expand of the bar
     FBtnClickHandled: Boolean;    // the mouse down was the ">>" click: its mouse up must do nothing
     FCollapseMenu: Boolean;       // the popup menu is the one of the ">>" button
@@ -316,7 +286,6 @@ type
   private
     FRemoved: boolean;
     FDragAlign: TPanelAlign;
-    FMonitorNum: Integer;
     FDragMonitorNum: Integer;
     FItemPopup: Integer;
     FDragIndex: Integer;
@@ -387,7 +356,6 @@ type
     FLockAutoHide: Boolean;
     FBeforeAutoHideBound: TRect;
     FAfterAutoHideBound: TRect;
-    FAutoShowDelay: Integer;
     procedure DoAutoHide;
     procedure DoAutoShow;
     procedure DoDelayedAutoShow;
@@ -396,51 +364,51 @@ type
   public
     procedure SaveSettings;
     procedure UpdateItemSizes;
-    property AutoHide: Boolean read FAutoHide write SetAutoHide;
-    property AutoHideTransparency: Boolean read FAutoHideTransparency write FAutoHideTransparency;
-    property AutoShowDelay: Integer read FAutoShowDelay write FAutoShowDelay;
-    property AutoShowMode: TAutoShowMode read FAutoShowMode write FAutoShowMode;
-    property BackgroundColor: Cardinal read GetBackgroundColor write FBackgroundColor;
+    property AutoHide: Boolean read FConfig.AutoHide write SetAutoHide;
+    property AutoHideTransparency: Boolean read FConfig.AutoHideTransparency write FConfig.AutoHideTransparency;
+    property AutoShowDelay: Integer read FConfig.AutoShowDelay write FConfig.AutoShowDelay;
+    property AutoShowMode: TAutoShowMode read FConfig.AutoShowMode write FConfig.AutoShowMode;
+    property BackgroundColor: Cardinal read GetBackgroundColor write FConfig.BackgroundColor;
     property ButtonSize: TSize read FButtonSize write SetButtonSize;
-    property EnableAeroGlass: Boolean read FEnableAeroGlass write SetEnableAeroGlass;
-    property GlowSize: Integer read FGlowSize write FGlowSize;
-    property TooltipShow: Boolean read FTooltipShow write FTooltipShow;
-    property ModernStyle: Boolean read FModernStyle write SetModernStyle;
+    property EnableAeroGlass: Boolean read FConfig.EnableAeroGlass write SetEnableAeroGlass;
+    property GlowSize: Integer read FConfig.GlowSize write FConfig.GlowSize;
+    property TooltipShow: Boolean read FConfig.TooltipShow write FConfig.TooltipShow;
+    property ModernStyle: Boolean read FConfig.ModernStyle write SetModernStyle;
     property ShowSysWidgets: Boolean read GetShowSysWidgets write SetShowSysWidgets;
     property HideOnFullscreen: Boolean read GetHideOnFullscreen write SetHideOnFullscreen;
     property CollapseOnFullscreen: Boolean read GetCollapseOnFullscreen write SetCollapseOnFullscreen;
     property AnimateCollapse: Boolean read GetAnimateCollapse write SetAnimateCollapse;
     property AutoCollapseSecs: Integer read GetAutoCollapseSecs write SetAutoCollapseSecs;
     property TaskbarIcon: string read GetTaskbarIcon write SetTaskbarIcon;
-    property BarStyle: Integer read FBarStyle write SetBarStyle;
+    property BarStyle: Integer read FConfig.BarStyle write SetBarStyle;
     procedure ApplyWindowAccent;
     property ZoomPercent: Integer read GetZoomPercent write SetZoomPercent;
     property HotIndex: Integer read FHotIndex write SetHotIndex;
     property HotkeyInfo: THotkeyInfo read FHotkeyInfo write SetHotkeyInfo;
-    property IconSize: Integer read FIconSize write SetIconSize;
-    property IsLightStyle: Boolean read FIsLightStyle write SetIsLightStyle;
-    property ItemMargin: TSize read FItemMargin write SetItemMargin;
-    property ItemOrder: TItemOrder read FItemOrder write SetItemOrder;
-    property JumplistShowMode: TJumplistShowMode read FJumplistShowMode write FJumplistShowMode;
-    property JumplistRecentMax: Integer read FJumplistRecentMax write FJumplistRecentMax;
-    property TransparencyMode: TTransparencyMode read FTransparencyMode write SetTransparencyMode;
-    property Look: TLook read FLook  write SetLook;
+    property IconSize: Integer read FConfig.IconSize write SetIconSize;
+    property IsLightStyle: Boolean read FConfig.IsLightStyle write SetIsLightStyle;
+    property ItemMargin: TSize read FConfig.ItemMargin write SetItemMargin;
+    property ItemOrder: TItemOrder read FConfig.ItemOrder write SetItemOrder;
+    property JumplistShowMode: TJumplistShowMode read FConfig.JumplistShowMode write FConfig.JumplistShowMode;
+    property JumplistRecentMax: Integer read FConfig.JumplistRecentMax write FConfig.JumplistRecentMax;
+    property TransparencyMode: TTransparencyMode read FConfig.TransparencyMode write SetTransparencyMode;
+    property Look: TLook read FConfig.Look  write SetLook;
     property PressedIndex: Integer read FPressedIndex write SetPressedIndex;
-    property Layout: TPanelLayout read FLayout write SetLayout;
+    property Layout: TPanelLayout read FConfig.Layout write SetLayout;
     property Align: TPanelAlign read GetAlign  write SetAlign;
-    property SortAlphabetically: Boolean read FSortAlphabetically write SetSortAlphabetically;
-    property StayOnTop: Boolean read FStayOnTop write SetStayOnTop default True;
-    property TextLayout: TTextLayout read FTextLayout write SetTextLayout;
-    property TextOffset: Integer read FTextOffset write SetTextOffset;
-    property TextWidth: Integer read FTextWidth write SetTextWidth;
-    property TextColor: Cardinal read FTextColor write FTextColor;
-    property UseBkgndColor: Boolean read FUseBkgndColor write SetUseBkgndColor;
-    property UseTextColor: Boolean read FUseTextColor write FUseTextColor;
-    property SeparatorWidth: Integer read FSeparatorWidth write FSeparatorWidth default DEF_SEPARATOR_WIDTH;
-    property SeparatorStyle: TSeparatorStyle read FSeparatorStyle write FSeparatorStyle default DEF_SEPARATOR_STYLE;
+    property SortAlphabetically: Boolean read FConfig.SortAlphabetically write SetSortAlphabetically;
+    property StayOnTop: Boolean read FConfig.StayOnTop write SetStayOnTop default True;
+    property TextLayout: TTextLayout read FConfig.TextLayout write SetTextLayout;
+    property TextOffset: Integer read FConfig.TextOffset write SetTextOffset;
+    property TextWidth: Integer read FConfig.TextWidth write SetTextWidth;
+    property TextColor: Cardinal read FConfig.TextColor write FConfig.TextColor;
+    property UseBkgndColor: Boolean read FConfig.UseBkgndColor write SetUseBkgndColor;
+    property UseTextColor: Boolean read FConfig.UseTextColor write FConfig.UseTextColor;
+    property SeparatorWidth: Integer read FConfig.SeparatorWidth write FConfig.SeparatorWidth default DEF_SEPARATOR_WIDTH;
+    property SeparatorStyle: TSeparatorStyle read FConfig.SeparatorStyle write FConfig.SeparatorStyle default DEF_SEPARATOR_STYLE;
     //
-    property Corner1GapWidth: Integer read FCorner1GapWidth write FCorner1GapWidth;
-    property Corner2GapWidth: Integer read FCorner2GapWidth write FCorner2GapWidth;
+    property Corner1GapWidth: Integer read FConfig.Corner1GapWidth write FConfig.Corner1GapWidth;
+    property Corner2GapWidth: Integer read FConfig.Corner2GapWidth write FConfig.Corner2GapWidth;
   public class
     procedure CloseAll;
   end;
@@ -593,7 +561,7 @@ begin
 
   LoadPinned;
 
-  if FSortAlphabetically
+  if FConfig.SortAlphabetically
   then Items.Sort;
   Items.PinnedToEnd;
 
@@ -605,7 +573,7 @@ function TLinkbarWcl.GetAlign: TPanelAlign;
 begin
   if (FMouseDragLinkbar)
   then Result := FDragAlign
-  else Result := FAlign;
+  else Result := FConfig.Align;
 end;
 
 function TLinkbarWcl.CheckItem(AIndex: Integer): Boolean;
@@ -670,7 +638,7 @@ end;
 
 function TLinkbarWcl.BarIsLightStyle: Boolean;
 begin
-  Result := FIsLightStyle;
+  Result := FConfig.IsLightStyle;
 end;
 
 function TLinkbarWcl.BarPressedIndex: Integer;
@@ -680,7 +648,7 @@ end;
 
 function TLinkbarWcl.BarSeparatorWidth: Integer;
 begin
-  Result := FSeparatorWidth;
+  Result := FConfig.SeparatorWidth;
 end;
 
 function TLinkbarWcl.BarItemsMargin: Integer;
@@ -695,7 +663,7 @@ end;
 
 function TLinkbarWcl.BarTextLayout: TTextLayout;
 begin
-  Result := FTextLayout;
+  Result := FConfig.TextLayout;
 end;
 
 function TLinkbarWcl.BarTextRect: TRect;
@@ -705,17 +673,17 @@ end;
 
 function TLinkbarWcl.BarUseTextColor: Boolean;
 begin
-  Result := FUseTextColor;
+  Result := FConfig.UseTextColor;
 end;
 
 function TLinkbarWcl.BarTextColor: Cardinal;
 begin
-  Result := FTextColor;
+  Result := FConfig.TextColor;
 end;
 
 function TLinkbarWcl.BarGlowSize: Integer;
 begin
-  Result := FGlowSize;
+  Result := FConfig.GlowSize;
 end;
 
 procedure TLinkbarWcl.RecreateMainBitmap(const AWidth, AHeight: integer);
@@ -771,8 +739,8 @@ begin
     // Hidden
 
     // Check corner gaps width
-    c1gw := FCorner1GapWidth;
-    c2gw := FCorner2GapWidth;
+    c1gw := FConfig.Corner1GapWidth;
+    c2gw := FConfig.Corner2GapWidth;
     if (c1gw > 0) or (c2gw > 0)
     then begin
       if Align in [EPanelAlignLeft, EPanelAlignRight]
@@ -785,7 +753,7 @@ begin
       end;
     end;
 
-    if (FAutoHideTransparency)
+    if (FConfig.AutoHideTransparency)
     then begin
       // and Transparency
       Pt1 := ABounds.TopLeft;
@@ -874,8 +842,8 @@ begin
     ApplyWindowAccent;
   end
   else begin
-    blurEnabled := not (FAutoHiden and FAutoHideTransparency);
-    if (IsWindows8And8Dot1 and not FEnableAeroGlass)
+    blurEnabled := not (FAutoHiden and FConfig.AutoHideTransparency);
+    if (IsWindows8And8Dot1 and not FConfig.EnableAeroGlass)
     then blurEnabled := False;
     ThemeUpdateBlur(Handle, blurEnabled);
   end;
@@ -902,48 +870,15 @@ begin
   FCollapse.AnimateEnabled      := settings.Read(INI_ANIMATE_COLLAPSE, DEF_ANIMATE_COLLAPSE);
   FCollapse.AutoSecs     := settings.Read(INI_AUTOCOLLAPSE, DEF_AUTOCOLLAPSE, 0, 3600);
   FLauncher.IconSpec          := Trim(settings.Read(INI_TASKBAR_ICON, ''));
-  FAutoHide             := settings.Read(INI_AUTOHIDE, DEF_AUTOHIDE);
-  FAutoHideTransparency := settings.Read(INI_AUTOHIDE_TRANSPARENCY, DEF_AUTOHIDE_TRANSPARENCY);
-  FAutoShowDelay        := settings.Read(INI_AUTOSHOW_DELAY, DEF_AUTOSHOW_DELAY, 0, 60000);
-  FAutoShowMode         := settings.Read<TAutoShowMode>(INI_AUTOHIDE_SHOWMODE, DEF_AUTOHIDE_SHOWMODE);
-  FBackgroundColor      := Cardinal(settings.Read(INI_BKGCOLOR, DEF_BKGCOLOR));
-  FCorner1GapWidth      := settings.Read(INI_CORNER1GAP_WIDTH, DEF_CORNERGAP_WIDTH);
-  FCorner2GapWidth      := settings.Read(INI_CORNER2GAP_WIDTH, DEF_CORNERGAP_WIDTH);
-  FEnableAeroGlass      := settings.Read(INI_ENABLE_AG, DEF_ENABLE_AG);
-  FGlowSize             := settings.Read(INI_GLOWSIZE, DEF_GLOWSIZE, GLOW_SIZE_MIN, GLOW_SIZE_MAX);
-  FTooltipShow          := settings.Read(INI_TOOLTIP_SHOW, DEF_TOOLTIP_SHOW);
-  FModernStyle          := settings.Read(INI_MODERN_STYLE, DEF_MODERN_STYLE);
+  FConfig.Load(settings);
   FSysWidgets.Enabled       := settings.Read(INI_SYS_WIDGETS, DEF_SYS_WIDGETS);
   // Without the CPU/RAM widgets there is no ">>" button to expand again
   FCollapse.ManualCollapsed         := settings.Read(INI_COLLAPSED, DEF_COLLAPSED) and FSysWidgets.Enabled;
-  FBarStyle          := settings.Read(INI_BAR_STYLE, DEF_BAR_STYLE, BAR_STYLE_NORMAL, BAR_STYLE_TASKBAR);
   FZoom.Percent          := settings.Read(INI_ZOOM, DEF_ZOOM, ZOOM_MIN, ZOOM_MAX);
   FZoom.Cursor           := -1;
   FDock.Pos             := settings.Read(INI_DOCK_POS, DEF_DOCK_POS, 0, 1000);
   hki                   := settings.Read(INI_AUTOHIDE_HOTKEY, DEF_AUTOHIDE_HOTKEY);
-  FIconSize             := settings.Read(INI_ICON_SIZE, DEF_ICON_SIZE, ICON_SIZE_MIN, ICON_SIZE_MAX);
-  FIsLightStyle         := settings.Read(INI_ISLIGHT, DEF_ISLIGHT);
-  FItemMargin.cx        := settings.Read(INI_MARGINX, DEF_MARGINX, MARGIN_MIN, MARGIN_MAX);
-  FItemMargin.cy        := settings.Read(INI_MARGINY, DEF_MARGINY, MARGIN_MIN, MARGIN_MAX);
-  FSeparatorWidth       := settings.Read(INI_SEPARATOR_WIDTH, DEF_SEPARATOR_WIDTH, SEPARATOR_WIDTH_MIN, SEPARATOR_WIDTH_MAX);
-  FSeparatorStyle       := settings.Read<TSeparatorStyle>(INI_SEPARATOR_STYLE, DEF_SEPARATOR_STYLE);
-  FItemOrder            := settings.Read<TItemOrder>(INI_ITEM_ORDER, DEF_ITEM_ORDER);
-  FLayout               := settings.Read<TPanelLayout>(INI_ITEMS_ALIGN, DEF_ITEMS_ALIGN);
-  FJumplistRecentMax    := settings.Read(INI_JUMPLIST_RECENTMAX, DEF_JUMPLIST_RECENTMAX, JUMPLIST_RECENTMAX_MIN, JUMPLIST_RECENTMAX_MAX);
-  FJumplistShowMode     := settings.Read<TJumplistShowMode>(INI_JUMPLIST_SHOWMODE, DEF_JUMPLIST_SHOWMODE);
-  FLockLinkbar          := settings.Read(INI_LOCK_BAR, DEF_LOCK_BAR);
-  FTransparencyMode     := settings.Read<TTransparencyMode>(INI_TRANSPARENCYMODE, DEF_TRANSPARENCYMODE);
-  FLook                 := settings.Read<TLook>(INI_COLORMODE, DEF_COLORMODE);
-  FMonitorNum           := settings.Read(INI_MONITORNUM, Screen.PrimaryMonitor.MonitorNum, 0, Screen.MonitorCount-1);
-  FAlign                := settings.Read<TPanelAlign>(INI_EDGE, DEF_EDGE);
-  FSortAlphabetically   := settings.Read(INI_SORT_AB, DEF_SORT_AB);
-  FTextColor            := Cardinal(settings.Read(INI_TXTCOLOR, DEF_TXTCOLOR) and $ffffff);
-  FTextLayout           := settings.Read<TTextLayout>(INI_TEXT_LAYOUT, DEF_TEXT_LAYOUT);
-  FTextOffset           := settings.Read(INI_TEXT_OFFSET, DEF_TEXT_OFFSET, TEXT_OFFSET_MIN, TEXT_OFFSET_MAX);
-  FTextWidth            := settings.Read(INI_TEXT_WIDTH, DEF_TEXT_WIDTH, TEXT_WIDTH_MIN, TEXT_WIDTH_MAX);
-  FUseBkgndColor        := settings.Read(INI_USEBKGCOLOR, DEF_USEBKGCOLOR);
-  FUseTextColor         := settings.Read(INI_USETXTCOLOR, DEF_USETXTCOLOR);
-  FStayOnTop := (FormStyle = fsStayOnTop);
+  FConfig.StayOnTop := (FormStyle = fsStayOnTop);
   StayOnTop             := settings.Read(INI_STAYONTOP, DEF_STAYONTOP);
   //
   settings.Close;
@@ -960,10 +895,10 @@ begin
   FMouseDragItem := False;
   FDragingItem := False;
 
-  GlobalLayout := FLayout;
-  GlobalLook := FLook;
-  GlobalAeroGlassEnabled := FEnableAeroGlass;
-  GlobalModernStyle := FModernStyle;
+  GlobalLayout := FConfig.Layout;
+  GlobalLook := FConfig.Look;
+  GlobalAeroGlassEnabled := FConfig.EnableAeroGlass;
+  GlobalModernStyle := FConfig.ModernStyle;
 
   // CPU/RAM widgets
   if FSysWidgets.Enabled
@@ -1037,49 +972,15 @@ begin
   then begin
     settings.Open(FSettingsFileName);
     // Write
-    settings.Write(INI_MONITORNUM, FMonitorNum);
+    FConfig.Save(settings, Align, BackgroundColor);
     settings.Write(INI_HIDE_FULLSCREEN, FFullscreen.HideOnFullscreen);
     settings.Write(INI_COLLAPSE_FULLSCREEN, FCollapse.OnFullscreen);
     settings.Write(INI_ANIMATE_COLLAPSE, FCollapse.AnimateEnabled);
     settings.Write(INI_AUTOCOLLAPSE, FCollapse.AutoSecs);
     settings.Write(INI_TASKBAR_ICON, FLauncher.IconSpec);
     settings.Write(INI_PROFILE, FProfiles.Current);
-    settings.Write(INI_EDGE, Integer(Align));
-    settings.Write(INI_AUTOHIDE, AutoHide);
-    settings.Write(INI_AUTOHIDE_TRANSPARENCY, FAutoHideTransparency);
-    settings.Write(INI_AUTOHIDE_SHOWMODE, Integer(AutoShowMode));
     settings.Write(INI_AUTOHIDE_HOTKEY, string(HotkeyInfo));
-    settings.Write(INI_ICON_SIZE, IconSize);
-    settings.Write(INI_MARGINX, ItemMargin.cx);
-    settings.Write(INI_MARGINY, ItemMargin.cy);
-    settings.Write(INI_TEXT_LAYOUT, Integer(TextLayout));
-    settings.Write(INI_TEXT_OFFSET, TextOffset);
-    settings.Write(INI_TEXT_WIDTH, TextWidth);
-    settings.Write(INI_ITEM_ORDER, Integer(ItemOrder));
-    settings.Write(INI_ITEMS_ALIGN, Integer(Layout));
-    settings.Write(INI_LOCK_BAR, FLockLinkbar);
-    settings.Write(INI_ISLIGHT, FIsLightStyle);
-    settings.Write(INI_ENABLE_AG, FEnableAeroGlass);
-    settings.Write(INI_AUTOSHOW_DELAY, FAutoShowDelay);
-    settings.Write(INI_SORT_AB, FSortAlphabetically);
-    settings.Write(INI_USEBKGCOLOR, FUseBkgndColor);
-    settings.Write(INI_BKGCOLOR, HexDisplayPrefix + IntToHex(BackgroundColor, 8));
-    settings.Write(INI_USETXTCOLOR, FUseTextColor);
-    settings.Write(INI_TXTCOLOR, HexDisplayPrefix + IntToHex(FTextColor, 6));
-    settings.Write(INI_GLOWSIZE, FGlowSize);
-    settings.Write(INI_STAYONTOP, FStayOnTop);
-    settings.Write(INI_JUMPLIST_SHOWMODE, Integer(JumplistShowMode));
-    settings.Write(INI_JUMPLIST_RECENTMAX, JumplistRecentMax);
-    settings.Write(INI_COLORMODE, Integer(FLook));
-    settings.Write(INI_TRANSPARENCYMODE, Integer(FTransparencyMode));
-    settings.Write(INI_CORNER1GAP_WIDTH, FCorner1GapWidth);
-    settings.Write(INI_CORNER2GAP_WIDTH, FCorner2GapWidth);
-    settings.Write(INI_SEPARATOR_WIDTH, FSeparatorWidth);
-    settings.Write(INI_SEPARATOR_STYLE, Integer(FSeparatorStyle));
-    settings.Write(INI_TOOLTIP_SHOW, FTooltipShow);
-    settings.Write(INI_MODERN_STYLE, FModernStyle);
     settings.Write(INI_SYS_WIDGETS, FSysWidgets.Enabled);
-    settings.Write(INI_BAR_STYLE, FBarStyle);
     settings.Write(INI_ZOOM, FZoom.Percent);
     settings.Write(INI_DOCK_POS, FDock.Pos);
     settings.Write(INI_COLLAPSED, FCollapse.ManualCollapsed);
@@ -1187,28 +1088,28 @@ begin
   UpdateBackgroundColor;
 
   if IsWindows10
-  then ThemeSetWindowAttribute10(Handle, FTransparencyMode, BackgroundColor)
+  then ThemeSetWindowAttribute10(Handle, FConfig.TransparencyMode, BackgroundColor)
   else ThemeSetWindowAttribute78(Handle);
   // Dock: its own anti-aliased background, no DWM accent (that one has jagged corners)
   if IsWindows10 and IsDock
   then ThemeSetWindowAccentPolicy10(Handle, tmDisabled, 0);
 
-  ThemeInitData(Handle, FIsLightStyle);
+  ThemeInitData(Handle, FConfig.IsLightStyle);
 
   GetOrCreateFilesList(WorkDir + LINKSLIST_FILE_NAME);
 
   UpdateItemSizes;
 
-  oAppBar := TAccessBar.Create2(self, FAlign, FALSE);
+  oAppBar := TAccessBar.Create2(self, FConfig.Align, FALSE);
   oAppBar.StayOnTop := StayOnTop;
-  oAppBar.MonitorNum := FMonitorNum;
+  oAppBar.MonitorNum := FConfig.MonitorNum;
   oAppBar.QuerySizing := QuerySizingEvent;
   oAppBar.QuerySized := QuerySizedEvent;
   oAppBar.QueryAutoHide := QueryHideEvent;
 
   // Dock mode: floating bar, no autohide
   oAppBar.Floating := IsDock or IsTaskbarIcon;
-  if IsDock or IsTaskbarIcon then FAutoHide := False;
+  if IsDock or IsTaskbarIcon then FConfig.AutoHide := False;
 
   if not AutoHide then oAppBar.Loaded
   else AutoHide := TRUE;
@@ -1593,7 +1494,7 @@ begin
         DoDragItem(FMousePosDown.X, FMousePosDown.Y);
       end;
     end
-    else if (not FLockLinkbar)
+    else if (not FConfig.LockLinkbar)
     then begin
       if (FPressedIndex = ITEM_NONE)
       then begin
@@ -1603,7 +1504,7 @@ begin
           FMouseDragItem := False;
           GetUserWorkArea(MonitorsWorkareaWoTaskbar);
           FBeforeDragBounds := BoundsRect;
-          FDragMonitorNum := FMonitorNum;
+          FDragMonitorNum := FConfig.MonitorNum;
         end;
       end
       else begin
@@ -1672,10 +1573,10 @@ begin
         if FMouseDragLinkbar then
         begin
           FMouseDragLinkbar := False;
-          FMonitorNum := FDragMonitorNum;
+          FConfig.MonitorNum := FDragMonitorNum;
           Align := FDragAlign;
-          TSettingsFile.Write(FSettingsFileName, INI_MONITORNUM, FMonitorNum);
-          TSettingsFile.Write(FSettingsFileName, INI_EDGE, Integer(FAlign));
+          TSettingsFile.Write(FSettingsFileName, INI_MONITORNUM, FConfig.MonitorNum);
+          TSettingsFile.Write(FSettingsFileName, INI_EDGE, Integer(FConfig.Align));
         end
         else if FMouseDragItem
         then begin // drag item end
@@ -2250,8 +2151,8 @@ begin
   FDragAlign := e;
   FDragMonitorNum := mon.MonitorNum;
 
-  if (FDragAlign = FAlign)
-     and (FDragMonitorNum = FMonitorNum)
+  if (FDragAlign = FConfig.Align)
+     and (FDragMonitorNum = FConfig.MonitorNum)
   then begin // it's position before drag
     r := FBeforeDragBounds;
   end
@@ -2269,10 +2170,10 @@ begin
       end;
 
       // Correct new rect
-      if (FDragMonitorNum = FMonitorNum)
+      if (FDragMonitorNum = FConfig.MonitorNum)
          and IsVertical(FDragAlign)
       then begin
-        case FAlign of
+        case FConfig.Align of
           EPanelAlignTop: r.Top := r.Top - FBeforeDragBounds.Height;
           EPanelAlignBottom: r.Bottom := r.Bottom + FBeforeDragBounds.Height;
         end;
@@ -2378,8 +2279,8 @@ begin
 
     entry.Item := item;
     entry.Checked := ((item = imPinned) and IsItemIndex(FItemPopup) and Items[FItemPopup].Pinned)
-                  or ((item = imLockBar) and FLockLinkbar)
-                  or ((item = imSortAlphabet) and FSortAlphabetically);
+                  or ((item = imLockBar) and FConfig.LockLinkbar)
+                  or ((item = imSortAlphabet) and FConfig.SortAlphabetically);
     entries := entries + [entry];
   end;
 
@@ -2452,10 +2353,10 @@ end;
 
 procedure TLinkbarWcl.DoPopupJumplist(APt: TPoint; AShift: Boolean);
 begin
-  if (FJumplistShowMode <> EJumplistShowModeDisabled)
+  if (FConfig.JumplistShowMode <> EJumplistShowModeDisabled)
   then begin
     const item = Items[FItemPopup];
-    var form := TryCreateJumplist(Self, item.Pidl, FJumplistRecentMax);
+    var form := TryCreateJumplist(Self, item.Pidl, FConfig.JumplistRecentMax);
     if Assigned(form)
     then begin
       var itemRect := item.Rect;
@@ -2524,11 +2425,11 @@ begin
   // Dock and taskbar icon modes have no autohide
   if (IsDock or IsTaskbarIcon) and AValue
   then begin
-    FAutoHide := False;
+    FConfig.AutoHide := False;
     Exit;
   end;
   oAppBar.AutoHide := AValue;
-  FAutoHide := oAppBar.AutoHide;
+  FConfig.AutoHide := oAppBar.AutoHide;
 end;
 
 procedure TLinkbarWcl.SetButtonSize(AValue: TSize);
@@ -2557,38 +2458,38 @@ begin
   ETextLayoutLeft, ETextLayoutRight:
     begin
       // button size
-      w := FItemMargin.cx + FIconSize + FTextOffset + FTextWidth + FItemMargin.cx;
-      h := FItemMargin.cy + Max(FIconSize, textHeight) + FItemMargin.cy;
+      w := FConfig.ItemMargin.cx + FConfig.IconSize + FConfig.TextOffset + FConfig.TextWidth + FConfig.ItemMargin.cx;
+      h := FConfig.ItemMargin.cy + Max(FConfig.IconSize, textHeight) + FConfig.ItemMargin.cy;
       // icon offset
       if (TextLayout = ETextLayoutRight)
-      then FIconOffset.X := FItemMargin.cx
-      else FIconOffset.X := FItemMargin.cx + FTextWidth + FTextOffset;
-      FIconOffset.Y := (h - FIconSize) div 2;
+      then FIconOffset.X := FConfig.ItemMargin.cx
+      else FIconOffset.X := FConfig.ItemMargin.cx + FConfig.TextWidth + FConfig.TextOffset;
+      FIconOffset.Y := (h - FConfig.IconSize) div 2;
       // text rect
       if (TextLayout = ETextLayoutRight)
-      then FTextRect := Bounds( FItemMargin.cx + FIconSize + FTextOffset, (h - textHeight) div 2, FTextWidth, textHeight )
-      else FTextRect := Bounds( FItemMargin.cx, (h - textHeight) div 2, FTextWidth, textHeight );
+      then FTextRect := Bounds( FConfig.ItemMargin.cx + FConfig.IconSize + FConfig.TextOffset, (h - textHeight) div 2, FConfig.TextWidth, textHeight )
+      else FTextRect := Bounds( FConfig.ItemMargin.cx, (h - textHeight) div 2, FConfig.TextWidth, textHeight );
     end;
   ETextLayoutTop, ETextLayoutBottom:
     begin
       // button size
-      w := FItemMargin.cx + Max(FIconSize, FTextWidth) + FItemMargin.cx;
-      h := FItemMargin.cy + FIconSize + FTextOffset + textHeight + FItemMargin.cy;
+      w := FConfig.ItemMargin.cx + Max(FConfig.IconSize, FConfig.TextWidth) + FConfig.ItemMargin.cx;
+      h := FConfig.ItemMargin.cy + FConfig.IconSize + FConfig.TextOffset + textHeight + FConfig.ItemMargin.cy;
       // icon offset
-      FIconOffset.X := (w - FIconSize) div 2;
+      FIconOffset.X := (w - FConfig.IconSize) div 2;
       if (TextLayout = ETextLayoutBottom)
-      then FIconOffset.Y := FItemMargin.cy
-      else FIconOffset.Y := FItemMargin.cy + textHeight + FTextOffset;
+      then FIconOffset.Y := FConfig.ItemMargin.cy
+      else FIconOffset.Y := FConfig.ItemMargin.cy + textHeight + FConfig.TextOffset;
       // text rect
       if (TextLayout = ETextLayoutBottom)
-      then FTextRect := Bounds( FTextOffset, FItemMargin.cy + FIconSize + FTextOffset, w - 2*FTextOffset, textHeight )
-      else FTextRect := Bounds( FTextOffset, FItemMargin.cy, w - 2*FTextOffset, textHeight );
+      then FTextRect := Bounds( FConfig.TextOffset, FConfig.ItemMargin.cy + FConfig.IconSize + FConfig.TextOffset, w - 2*FConfig.TextOffset, textHeight )
+      else FTextRect := Bounds( FConfig.TextOffset, FConfig.ItemMargin.cy, w - 2*FConfig.TextOffset, textHeight );
     end;
   else
     begin
-      w := FItemMargin.cx + FIconSize + FItemMargin.cx;
-      h := FItemMargin.cy + FIconSize + FItemMargin.cy;
-      FIconOffset := Point(FItemMargin.cx, FItemMargin.cy);
+      w := FConfig.ItemMargin.cx + FConfig.IconSize + FConfig.ItemMargin.cx;
+      h := FConfig.ItemMargin.cy + FConfig.IconSize + FConfig.ItemMargin.cy;
+      FIconOffset := Point(FConfig.ItemMargin.cx, FConfig.ItemMargin.cy);
     end;
   end;
 
@@ -2597,47 +2498,47 @@ end;
 
 procedure TLinkbarWcl.SetIconSize(AValue: integer);
 begin
-  if AValue = FIconSize then Exit;
-  FIconSize := EnsureRange(AValue, ICON_SIZE_MIN, ICON_SIZE_MAX);
-  Items.IconSize := FIconSize;
+  if AValue = FConfig.IconSize then Exit;
+  FConfig.IconSize := EnsureRange(AValue, ICON_SIZE_MIN, ICON_SIZE_MAX);
+  Items.IconSize := FConfig.IconSize;
   Items.ZoomIconSize := ZoomIconSizeValue;
 end;
 
 procedure TLinkbarWcl.SetIsLightStyle(AValue: Boolean);
 begin
-  if AValue = FIsLightStyle then Exit;
-  FIsLightStyle := AValue;
-  ThemeInitData(Handle, FIsLightStyle);
+  if AValue = FConfig.IsLightStyle then Exit;
+  FConfig.IsLightStyle := AValue;
+  ThemeInitData(Handle, FConfig.IsLightStyle);
 end;
 
 procedure TLinkbarWcl.SetItemMargin(AValue: TSize);
 begin
-  if AValue = FItemMargin then Exit;
-  FItemMargin := AValue;
+  if AValue = FConfig.ItemMargin then Exit;
+  FConfig.ItemMargin := AValue;
 end;
 
 procedure TLinkbarWcl.SetTextLayout(AValue: TTextLayout);
 begin
-  if AValue = FTextLayout then Exit;
-  FTextLayout := AValue;
+  if AValue = FConfig.TextLayout then Exit;
+  FConfig.TextLayout := AValue;
 end;
 
 procedure TLinkbarWcl.SetTextOffset(AValue: Integer);
 begin
-  if AValue = FTextOffset then Exit;
-  FTextOffset := AValue;
+  if AValue = FConfig.TextOffset then Exit;
+  FConfig.TextOffset := AValue;
 end;
 
 procedure TLinkbarWcl.SetTextWidth(AValue: Integer);
 begin
-  if AValue = FTextWidth then Exit;
-  FTextWidth := AValue;
+  if AValue = FConfig.TextWidth then Exit;
+  FConfig.TextWidth := AValue;
 end;
 
 procedure TLinkbarWcl.SetItemOrder(AValue: TItemOrder);
 begin
-  if AValue = FItemOrder then Exit;
-  FItemOrder := AValue;
+  if AValue = FConfig.ItemOrder then Exit;
+  FConfig.ItemOrder := AValue;
 end;
 
 procedure TLinkbarWcl.SetPressedIndex(AValue: integer);
@@ -2721,11 +2622,11 @@ end;
 
 procedure TLinkbarWcl.SetLayout(AValue: TPanelLayout);
 begin
-  if (FLayout = AValue)
+  if (FConfig.Layout = AValue)
   then Exit;
 
-  FLayout := AValue;
-  GlobalLayout := FLayout;
+  FConfig.Layout := AValue;
+  GlobalLayout := FConfig.Layout;
 
   //RecreateMainBitmap(Width, Height);
   //UpdateWindow;
@@ -2736,21 +2637,21 @@ begin
   //if (FScreenEdge = AValue)
   //then Exit;
 
-  FAlign := AValue;
-  FDragAlign := FAlign;
-  oAppBar.MonitorNum := FMonitorNum;
+  FConfig.Align := AValue;
+  FDragAlign := FConfig.Align;
+  oAppBar.MonitorNum := FConfig.MonitorNum;
   oAppBar.Align := AValue;
 end;
 
 procedure TLinkbarWcl.SetSortAlphabetically(AValue: Boolean);
 begin
-  if (FSortAlphabetically = AValue)
+  if (FConfig.SortAlphabetically = AValue)
   then Exit;
 
-  FSortAlphabetically := AValue;
-  TSettingsFile.Write(FSettingsFileName, INI_SORT_AB, FSortAlphabetically);
+  FConfig.SortAlphabetically := AValue;
+  TSettingsFile.Write(FSettingsFileName, INI_SORT_AB, FConfig.SortAlphabetically);
 
-  if FSortAlphabetically
+  if FConfig.SortAlphabetically
   then begin
     Items.Sort;
     RecreateMainBitmap(BitmapPanel.Width, BitmapPanel.Height);
@@ -2761,14 +2662,14 @@ end;
 procedure TLinkbarWcl.SetStayOnTop(AValue: Boolean);
 const FORM_STYLE: array[Boolean] of TFormStyle = (fsNormal, fsStayOnTop);
 begin
-  if (FStayOnTop = AValue)
+  if (FConfig.StayOnTop = AValue)
   then Exit;
 
-  FStayOnTop := AValue;
-  Self.FormStyle := FORM_STYLE[FStayOnTop];
+  FConfig.StayOnTop := AValue;
+  Self.FormStyle := FORM_STYLE[FConfig.StayOnTop];
 
   if Assigned(oAppBar)
-  then oAppBar.StayOnTop := FStayOnTop;
+  then oAppBar.StayOnTop := FConfig.StayOnTop;
 end;
 
 procedure TLinkbarWcl.QuerySizingEvent(Sender: TObject; AVertical: Boolean; var AWidth, AHeight: Integer);
@@ -2819,21 +2720,21 @@ end;
 
 procedure TLinkbarWcl.QueryHideEvent(Sender: TObject; AEnabled: boolean);
 begin
-  FAutoHide := AEnabled;
+  FConfig.AutoHide := AEnabled;
 end;
 
 procedure TLinkbarWcl.UpdateBackgroundColor;
 var lookmode: TLookMode;
 begin
-  lookmode.Color := FLook;
-  lookmode.Transparency := FTransparencyMode;
+  lookmode.Color := FConfig.Look;
+  lookmode.Transparency := FConfig.TransparencyMode;
   ThemeGetTaskbarColor(FSysBackgroundColor, lookmode);
 end;
 
 function TLinkbarWcl.GetBackgroundColor: Cardinal;
 begin
-  if (FUseBkgndColor)
-  then Result := FBackgroundColor
+  if (FConfig.UseBkgndColor)
+  then Result := FConfig.BackgroundColor
   else Result := FSysBackgroundColor;
 end;
 
@@ -3035,8 +2936,8 @@ begin
         Msg.Result := 0;
         if not FCreated then Exit;
         // force update Screen
-        FMonitorNum := Self.Monitor.MonitorNum; // or Screen.MonitorFromWindow(0, mdNull);
-        oAppBar.MonitorNum := FMonitorNum;
+        FConfig.MonitorNum := Self.Monitor.MonitorNum; // or Screen.MonitorFromWindow(0, mdNull);
+        oAppBar.MonitorNum := FConfig.MonitorNum;
         oAppBar.AppBarPosChanged;
         Exit;
       end;
@@ -3205,7 +3106,7 @@ begin
      and (Msg.LParamHi = FHotkeyInfo.KeyCode)
      and (Msg.LParamLo = FHotkeyInfo.Modifiers)
      and AutoHide
-     //and (FAutoShowMode = smHotkey)
+     //and (FConfig.AutoShowMode = smHotkey)
   then begin
     if (FAutoHiden)
     then begin
@@ -3268,8 +3169,8 @@ end;
 
 procedure TLinkbarWcl.imLockBarClick(Sender: TObject);
 begin
-  FLockLinkbar := not FLockLinkbar;
-  TSettingsFile.Write(FSettingsFileName, INI_LOCK_BAR, FLockLinkbar);
+  FConfig.LockLinkbar := not FConfig.LockLinkbar;
+  TSettingsFile.Write(FSettingsFileName, INI_LOCK_BAR, FConfig.LockLinkbar);
 end;
 
 procedure TLinkbarWcl.imNewLinkbarClick(Sender: TObject);
@@ -3510,7 +3411,7 @@ begin
   if (AutoHide)
      and (FAutoHiden)
      and ((not FCanAutoHide) or (WindowFromPoint(pt) = Handle))
-     //(FAutoShowMode <> smHotKey)
+     //(FConfig.AutoShowMode <> smHotKey)
   then begin
     FAutoHiden := False;
     MoveWindow(Handle, FBeforeAutoHideBound.Left, FBeforeAutoHideBound.Top,
@@ -3535,9 +3436,9 @@ begin
   if (not AutoHide)
   then Exit;
 
-  if (FAutoShowDelay = 0)
+  if (FConfig.AutoShowDelay = 0)
   then DoAutoShow
-  else SetTimer(Handle, TIMER_AUTO_SHOW, FAutoShowDelay, nil);
+  else SetTimer(Handle, TIMER_AUTO_SHOW, FConfig.AutoShowDelay, nil);
 end;
 
 procedure TLinkbarWcl.FormMouseEnter(Sender: TObject);
@@ -3545,7 +3446,7 @@ begin
   FCollapse.CancelAuto;
   if AutoHide
      and FAutoHiden
-     and (FAutoShowMode = EAutoShowModeMouseHover)
+     and (FConfig.AutoShowMode = EAutoShowModeMouseHover)
   then DoDelayedAutoShow;
 end;
 
@@ -3558,7 +3459,7 @@ begin
     FZoom.Cursor := -1;
     RedrawZoom;
   end;
-  if (FAutoShowMode = EAutoShowModeMouseHover) or FCanAutoHide
+  if (FConfig.AutoShowMode = EAutoShowModeMouseHover) or FCanAutoHide
   then DoDelayedAutoHide(TIMER_AUTO_HIDE_DELAY);
 end;
 
@@ -3816,7 +3717,7 @@ begin
     end
   end;
 
-  if FSortAlphabetically
+  if FConfig.SortAlphabetically
   then Items.Sort;
   Items.PinnedToEnd;
 
@@ -3848,11 +3749,11 @@ end;
 procedure TLinkbarWcl.SetEnableAeroGlass(AValue: Boolean);
 begin
   if (not IsWindows8And8Dot1)
-     or (AValue = FEnableAeroGlass)
+     or (AValue = FConfig.EnableAeroGlass)
   then Exit;
 
-  FEnableAeroGlass := AValue;
-  GlobalAeroGlassEnabled := FEnableAeroGlass;
+  FConfig.EnableAeroGlass := AValue;
+  GlobalAeroGlassEnabled := FConfig.EnableAeroGlass;
   ThemeSetWindowAttribute78(Handle);
   UpdateBlur;
 end;
@@ -3860,9 +3761,9 @@ end;
 procedure TLinkbarWcl.SetTransparencyMode(AValue: TTransparencyMode);
 begin
   if (not IsWindows10)
-     //or (AValue = FTransparencyMode)
+     //or (AValue = FConfig.TransparencyMode)
   then Exit;
-  FTransparencyMode := AValue;
+  FConfig.TransparencyMode := AValue;
   UpdateBackgroundColor;
   ApplyWindowAccent;
 end;
@@ -3870,7 +3771,7 @@ end;
 procedure TLinkbarWcl.SetLook(AValue: TLook);
 begin
   if (not IsWindows10)
-     //or (AValue = FTransparencyMode)
+     //or (AValue = FConfig.TransparencyMode)
   then Exit;
 
   GlobalLook := AValue;
@@ -3878,17 +3779,17 @@ begin
   BitmapButton.Clear;
   ThemeDrawButton(BitmapButton, BitmapButton.Bound, False);
 
-  FLook := AValue;
+  FConfig.Look := AValue;
   UpdateBackgroundColor;
   ApplyWindowAccent;
 end;
 
 procedure TLinkbarWcl.SetModernStyle(AValue: Boolean);
 begin
-  if (AValue = FModernStyle)
+  if (AValue = FConfig.ModernStyle)
   then Exit;
 
-  FModernStyle := AValue;
+  FConfig.ModernStyle := AValue;
   GlobalModernStyle := AValue;
 
   // Redraw cached button (hover/pressed) bitmap
@@ -3988,7 +3889,7 @@ end;
 
 function TLinkbarWcl.BarIconSize: Integer;
 begin
-  Result := FIconSize;
+  Result := FConfig.IconSize;
 end;
 
 procedure TLinkbarWcl.BarCancelTooltip;
@@ -4000,7 +3901,7 @@ end;
 
 function TLinkbarWcl.IsDock: Boolean;
 begin
-  Result := (FBarStyle = BAR_STYLE_DOCK);
+  Result := (FConfig.BarStyle = BAR_STYLE_DOCK);
 end;
 
 function TLinkbarWcl.ZoomEnabled: Boolean;
@@ -4049,9 +3950,9 @@ procedure TLinkbarWcl.ApplyWindowAccent;
 begin
   if not IsWindows10
   then Exit;
-  if IsDock or (FAutoHiden and FAutoHideTransparency)
+  if IsDock or (FAutoHiden and FConfig.AutoHideTransparency)
   then ThemeSetWindowAccentPolicy10(Handle, tmDisabled, 0)
-  else ThemeSetWindowAccentPolicy10(Handle, FTransparencyMode, BackgroundColor);
+  else ThemeSetWindowAccentPolicy10(Handle, FConfig.TransparencyMode, BackgroundColor);
 
   // dock background uses the background color: repaint
   if IsDock and Assigned(BitmapPanel)
@@ -4079,12 +3980,12 @@ end;
 
 function TLinkbarWcl.BarOpaque: Boolean;
 begin
-  Result := (FTransparencyMode = tmOpaque);
+  Result := (FConfig.TransparencyMode = tmOpaque);
 end;
 
 function TLinkbarWcl.BarWorkArea: TRect;
 begin
-  Result := Screen.Monitors[EnsureRange(FMonitorNum, 0, Screen.MonitorCount - 1)].WorkareaRect;
+  Result := Screen.Monitors[EnsureRange(FConfig.MonitorNum, 0, Screen.MonitorCount - 1)].WorkareaRect;
 end;
 
 function TLinkbarWcl.BarBounds: TRect;
@@ -4101,9 +4002,9 @@ end;
 procedure TLinkbarWcl.SetBarStyle(AValue: Integer);
 begin
   AValue := EnsureRange(AValue, BAR_STYLE_NORMAL, BAR_STYLE_TASKBAR);
-  if (AValue = FBarStyle)
+  if (AValue = FConfig.BarStyle)
   then Exit;
-  FBarStyle := AValue;
+  FConfig.BarStyle := AValue;
   FCollapse.FinishAnim;
 
   if (IsDock or IsTaskbarIcon) and AutoHide
@@ -4124,7 +4025,7 @@ end;
 
 function TLinkbarWcl.IsTaskbarIcon: Boolean;
 begin
-  Result := (FBarStyle = BAR_STYLE_TASKBAR);
+  Result := (FConfig.BarStyle = BAR_STYLE_TASKBAR);
 end;
 
 { Show the bar or only its taskbar button, depending on the style }
@@ -4254,7 +4155,7 @@ end;
 
 function TLinkbarWcl.BarSeparatorStyle: TSeparatorStyle;
 begin
-  Result := FSeparatorStyle;
+  Result := FConfig.SeparatorStyle;
 end;
 
 procedure TLinkbarWcl.BarDrawItemMarks(const ABitmap: THBitmap; const AItem: TItemBase; const ARect: TRect);
@@ -4316,9 +4217,9 @@ end;
 
 procedure TLinkbarWcl.SetUseBkgndColor(AValue: Boolean);
 begin
-  if (AValue = FUseBkgndColor)
+  if (AValue = FConfig.UseBkgndColor)
   then Exit;
-  FUseBkgndColor := AValue;
+  FConfig.UseBkgndColor := AValue;
   UpdateBackgroundColor;
 end;
 

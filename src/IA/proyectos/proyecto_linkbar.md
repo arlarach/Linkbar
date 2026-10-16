@@ -20,6 +20,7 @@
 - `Linkbar.dproj` - 2026-10-16 18:07
 - `Linkbar.dproj` - 2026-10-16 18:11
 - `Linkbar.dproj` - 2026-10-16 18:44
+- `Linkbar.dproj` - 2026-10-16 18:48
 
 **Pas**:
 - `mUnit.pas` - 2026-10-10 16:03
@@ -74,6 +75,8 @@
 - `mUnit.pas` - 2026-10-16 18:11
 - `Linkbar.Bar.PopupMenu.pas` - 2026-10-16 18:44
 - `mUnit.pas` - 2026-10-16 18:44
+- `Linkbar.Bar.Config.pas` - 2026-10-16 18:48
+- `mUnit.pas` - 2026-10-16 18:48
 
 ## Bitácora Lógica y Decisiones
 

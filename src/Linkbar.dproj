@@ -162,6 +162,7 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="Linkbar.Bar.DropTarget.pas"/>
         <DCCReference Include="Linkbar.Bar.Painter.pas"/>
         <DCCReference Include="Linkbar.Bar.PopupMenu.pas"/>
+        <DCCReference Include="Linkbar.Bar.Config.pas"/>
         <None Include="linkbar.inc"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
