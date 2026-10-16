@@ -157,6 +157,9 @@ type
     procedure SetModernStyle(AValue: Boolean);
     procedure SetShowSysWidgets(AValue: Boolean);
     function GetShowSysWidgets: Boolean;
+    function GetShowCpuTemp: Boolean;
+    procedure SetShowCpuTemp(AValue: Boolean);
+    procedure SysWidgetsCellsChanged(Sender: TObject);
     procedure SetBarStyle(AValue: Integer);
     procedure SetZoomPercent(AValue: Integer);
     function GetZoomPercent: Integer;
@@ -398,6 +401,7 @@ type
     property TooltipShow: Boolean read FConfig.TooltipShow write FConfig.TooltipShow;
     property ModernStyle: Boolean read FConfig.ModernStyle write SetModernStyle;
     property ShowSysWidgets: Boolean read GetShowSysWidgets write SetShowSysWidgets;
+    property ShowCpuTemp: Boolean read GetShowCpuTemp write SetShowCpuTemp;
     property HideOnFullscreen: Boolean read GetHideOnFullscreen write SetHideOnFullscreen;
     property CollapseOnFullscreen: Boolean read GetCollapseOnFullscreen write SetCollapseOnFullscreen;
     property AnimateCollapse: Boolean read GetAnimateCollapse write SetAnimateCollapse;
@@ -721,6 +725,7 @@ begin
   FLauncher.IconSpec          := Trim(settings.Read(INI_TASKBAR_ICON, ''));
   FConfig.Load(settings);
   FSysWidgets.Enabled       := settings.Read(INI_SYS_WIDGETS, DEF_SYS_WIDGETS);
+  FSysWidgets.TempEnabled   := settings.Read(INI_CPU_TEMP, DEF_CPU_TEMP);
   // Without the CPU/RAM widgets there is no ">>" button to expand again
   FCollapse.ManualCollapsed         := settings.Read(INI_COLLAPSED, DEF_COLLAPSED) and FSysWidgets.Enabled;
   FZoom.Percent          := settings.Read(INI_ZOOM, DEF_ZOOM, ZOOM_MIN, ZOOM_MAX);
@@ -825,6 +830,7 @@ begin
     settings.Write(INI_PROFILE, FProfiles.Current);
     settings.Write(INI_AUTOHIDE_HOTKEY, string(HotkeyInfo));
     settings.Write(INI_SYS_WIDGETS, FSysWidgets.Enabled);
+    settings.Write(INI_CPU_TEMP, FSysWidgets.TempEnabled);
     settings.Write(INI_ZOOM, FZoom.Percent);
     settings.Write(INI_DOCK_POS, FDock.Pos);
     settings.Write(INI_COLLAPSED, FCollapse.ManualCollapsed);
@@ -859,6 +865,7 @@ begin
   FSaveQueue.OnScheduleRetry := SaveRetryScheduled;
   FSaveQueue.OnFailed := ShowSaveFailed;
   FSysWidgets := TSysWidgets.Create(Self);
+  FSysWidgets.OnCellsChanged := SysWidgetsCellsChanged;
   FCollapse := TBarCollapse.Create(Self);
   FFullscreen := TFullscreenWatcher.Create(Self, FCollapse);
   FThumbs := TThumbController.Create(Self);
@@ -2870,6 +2877,25 @@ end;
 function TLinkbarWcl.GetShowSysWidgets: Boolean;
 begin
   Result := FSysWidgets.Enabled;
+end;
+
+function TLinkbarWcl.GetShowCpuTemp: Boolean;
+begin
+  Result := FSysWidgets.TempEnabled;
+end;
+
+procedure TLinkbarWcl.SetShowCpuTemp(AValue: Boolean);
+begin
+  FSysWidgets.TempEnabled := AValue;  // lays the bar out again if the cells change
+end;
+
+{ The temperature cell appeared or went away: the end of the bar changes length }
+procedure TLinkbarWcl.SysWidgetsCellsChanged(Sender: TObject);
+begin
+  FCollapse.FinishAnim;
+  if Assigned(oAppBar)
+  then oAppBar.AppBarPosChanged
+  else UpdateWindowSize;
 end;
 
 function TLinkbarWcl.BarAutoHideEnabled: Boolean;

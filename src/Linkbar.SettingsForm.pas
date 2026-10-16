@@ -133,6 +133,8 @@ type
     trbOpacity: TTrackBar;
     pnlSysWidgets: TPanel;
     chbSysWidgets: TCheckBox;
+    pnlCpuTemp: TPanel;
+    chbCpuTemp: TCheckBox;
     pnlAutoStart: TPanel;
     chbAutoStart: TCheckBox;
     pnlBarStyle: TPanel;
@@ -332,6 +334,22 @@ begin
   chbCollapseFullscreen.Anchors := [akLeft, akTop, akRight];
   chbCollapseFullscreen.Caption := L10NFind('Properties.CollapseFullscreen', 'Collapse the bar instead of hiding it when an app is full screen');
   chbCollapseFullscreen.OnClick := Changed;
+
+  // Additional page: CPU temperature (a cell next to the CPU / RAM widgets)
+  pnlCpuTemp := TPanel.Create(Self);
+  pnlCpuTemp.Parent := tsAdditionally;
+  pnlCpuTemp.BevelOuter := bvNone;
+  pnlCpuTemp.ShowCaption := False;
+  pnlCpuTemp.ParentBackground := True;
+  pnlCpuTemp.SetBounds(pnlAutoStart.Left, pnlAutoStart.Top, pnlAutoStart.Width, pnlAutoStart.Height);
+  pnlCpuTemp.Anchors := [akLeft, akTop, akRight];
+
+  chbCpuTemp := TCheckBox.Create(Self);
+  chbCpuTemp.Parent := pnlCpuTemp;
+  chbCpuTemp.SetBounds(chbAutoStart.Left, chbAutoStart.Top, chbAutoStart.Width, chbAutoStart.Height);
+  chbCpuTemp.Anchors := [akLeft, akTop, akRight];
+  chbCpuTemp.Caption := L10NFind('Properties.CpuTemp', 'Show CPU temperature (if a sensor is available)');
+  chbCpuTemp.OnClick := Changed;
 
   // Additional page: animate collapse / expand (dock mode)
   pnlAnimateCollapse := TPanel.Create(Self);
@@ -631,7 +649,8 @@ begin
   // CPU/RAM widgets
   InitOffsetSize(pnlSysWidgets, pnlJumplistRecentMax);
   // Start with Windows
-  InitOffsetSize(pnlAutoStart, pnlSysWidgets);
+  InitOffsetSize(pnlCpuTemp, pnlSysWidgets);
+  InitOffsetSize(pnlAutoStart, pnlCpuTemp);
   // Bar style (normal / dock) and magnification
   InitOffsetSize(pnlBarStyle, pnlAutoStart);
   InitOffsetSize(pnlZoom, pnlBarStyle);
@@ -648,6 +667,9 @@ begin
 
 
   pgc1.Height := tsPanel.Top + pnlSeparator2.BoundsRect.Bottom + VO2 + tsPanel.Left;
+  // the Additional page has one more row now: it must fit as well
+  if (tsPanel.Top + pnlTaskbarIcon.BoundsRect.Bottom + VO2 + tsPanel.Left > pgc1.Height)
+  then pgc1.Height := tsPanel.Top + pnlTaskbarIcon.BoundsRect.Bottom + VO2 + tsPanel.Left;
 
   btnOk.Top := pgc1.BoundsRect.Bottom + ScaleDimension(8);
   btnCancel.Top := btnOk.Top;
@@ -675,6 +697,8 @@ begin
   chbTooltipShow.Checked := FLinkbar.TooltipShow;
   chbModernStyle.Checked := FLinkbar.ModernStyle;
   chbSysWidgets.Checked := FLinkbar.ShowSysWidgets;
+  chbCpuTemp.Checked := FLinkbar.ShowCpuTemp;
+  chbCpuTemp.Enabled := chbSysWidgets.Checked;
   chbAutoStart.Checked := IsAutoStartEnabled;
   chbHideFullscreen.Checked := FLinkbar.HideOnFullscreen;
   chbCollapseFullscreen.Checked := FLinkbar.CollapseOnFullscreen;
@@ -926,6 +950,9 @@ begin
 
   btnApply.Enabled := True;
 
+  // The temperature is a cell of the CPU / RAM widgets
+  chbCpuTemp.Enabled := chbSysWidgets.Checked;
+
   // Color additional options
   edtBkgndColor.Enabled := chbUseBkgndColor.Checked;
   btnBkgndColorEdit.Enabled := chbUseBkgndColor.Checked;
@@ -1030,6 +1057,7 @@ begin
   FLinkbar.TooltipShow := chbTooltipShow.Checked;
   FLinkbar.ModernStyle := chbModernStyle.Checked;
   FLinkbar.ShowSysWidgets := chbSysWidgets.Checked;
+  FLinkbar.ShowCpuTemp := chbCpuTemp.Checked;
   SetAutoStart(chbAutoStart.Checked);
   FLinkbar.HideOnFullscreen := chbHideFullscreen.Checked;
   FLinkbar.CollapseOnFullscreen := chbCollapseFullscreen.Checked;

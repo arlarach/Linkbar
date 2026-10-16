@@ -24,6 +24,7 @@ type
     Target: string;
     Params: string;
     DelayMs: Integer;  // wait before running this element
+    Admin: Boolean;    // run it as administrator (UAC prompt)
   end;
 
   TActionData = record
@@ -64,7 +65,7 @@ type
 implementation
 
 uses
-  System.Math, System.IniFiles, System.StrUtils, System.UITypes,
+  System.Math, System.IniFiles, System.StrUtils, System.UITypes, System.Win.Registry, Vcl.Clipbrd,
   Winapi.ShellAPI, Winapi.ActiveX,
   GdiPlus, ExplorerMenu, Linkbar.Consts, Linkbar.Theme, Linkbar.L10n, Linkbar.Shell;
 
@@ -84,10 +85,16 @@ const
   GLYPH_MULTI    = $E71D;
   GLYPH_DELETE   = $E74D;
   CMD_EMPTY_BIN  = 'EmptyRecycleBin';
+  CMD_LOCK       = 'LockWorkstation';
+  CMD_SLEEP      = 'Sleep';
+  CMD_RESTART    = 'Restart';
+  CMD_SHUTDOWN   = 'Shutdown';
+  CMD_MONITOR    = 'MonitorOff';
+  CMD_THEME      = 'ToggleTheme';
   MAX_MULTI_ITEMS = 20;
   MAX_MULTI_DELAY = 60000;
 
-  PRESETS: array[0..21] of TActionPreset = (
+  PRESETS: array[0..22] of TActionPreset = (
     (Key: 'Copy';        Name: 'Copy';               Keys: 'Ctrl+C';          Glyph: $E8C8),
     (Key: 'Paste';       Name: 'Paste';              Keys: 'Ctrl+V';          Glyph: $E77F),
     (Key: 'Cut';         Name: 'Cut';                Keys: 'Ctrl+X';          Glyph: $E8C6),
@@ -109,12 +116,19 @@ const
     (Key: 'NextTrack';   Name: 'Next track';         Keys: 'NextTrack';       Glyph: $E893),
     (Key: 'PrevTrack';   Name: 'Previous track';     Keys: 'PrevTrack';       Glyph: $E892),
     (Key: 'VolumeUp';    Name: 'Volume up';          Keys: 'VolumeUp';        Glyph: $E995),
-    (Key: 'VolumeDown';  Name: 'Volume down';        Keys: 'VolumeDown';      Glyph: $E993)
+    (Key: 'VolumeDown';  Name: 'Volume down';        Keys: 'VolumeDown';      Glyph: $E993),
+    (Key: 'Mute';        Name: 'Mute / Unmute';      Keys: 'Mute';            Glyph: $E74F)
   );
 
   { Internal commands listed after the key presets in the editor }
-  CMD_PRESETS: array[0..0] of TActionPreset = (
-    (Key: CMD_EMPTY_BIN; Name: 'Empty Recycle Bin'; Keys: CMD_EMPTY_BIN; Glyph: GLYPH_DELETE)
+  CMD_PRESETS: array[0..6] of TActionPreset = (
+    (Key: CMD_EMPTY_BIN; Name: 'Empty Recycle Bin';          Keys: CMD_EMPTY_BIN; Glyph: GLYPH_DELETE),
+    (Key: CMD_LOCK;      Name: 'Lock computer';              Keys: CMD_LOCK;      Glyph: $E72E),
+    (Key: CMD_SLEEP;     Name: 'Sleep';                      Keys: CMD_SLEEP;     Glyph: $E708),
+    (Key: CMD_RESTART;   Name: 'Restart';                    Keys: CMD_RESTART;   Glyph: $E777),
+    (Key: CMD_SHUTDOWN;  Name: 'Shut down';                  Keys: CMD_SHUTDOWN;  Glyph: $E7E8),
+    (Key: CMD_MONITOR;   Name: 'Turn off monitor';           Keys: CMD_MONITOR;   Glyph: $E706),
+    (Key: CMD_THEME;     Name: 'Switch light / dark theme';  Keys: CMD_THEME;     Glyph: $E790)
   );
 
 function PresetName(const AIndex: Integer): string;
@@ -125,6 +139,35 @@ end;
 function CmdPresetName(const AIndex: Integer): string;
 begin
   Result := L10NFind('Action.' + CMD_PRESETS[AIndex].Key, CMD_PRESETS[AIndex].Name);
+end;
+
+function FindCmdPreset(const ACommand: string): Integer;
+var i: Integer;
+begin
+  for i := Low(CMD_PRESETS) to High(CMD_PRESETS) do
+    if SameText(ACommand, CMD_PRESETS[i].Keys)
+    then Exit(i);
+  Result := -1;
+end;
+
+{ Glyph of an internal command (the one of its preset) }
+function CommandGlyph(const ACommand: string): Word;
+var i: Integer;
+begin
+  i := FindCmdPreset(ACommand);
+  if (i >= 0)
+  then Result := CMD_PRESETS[i].Glyph
+  else Result := GLYPH_DELETE;
+end;
+
+{ Short text for the tooltip: "Action.Cmd<command>" or the name of the preset }
+function CommandDescription(const ACommand: string): string;
+var i: Integer;
+begin
+  i := FindCmdPreset(ACommand);
+  if (i >= 0)
+  then Result := L10NFind('Action.Cmd' + ACommand, CmdPresetName(i))
+  else Result := ACommand;
 end;
 
 { ---------- key names ---------- }
@@ -311,6 +354,32 @@ begin
   end;
 end;
 
+// Variables of the text of an action button: {date}, {time}, {datetime} and {clipboard}.
+// The clipboard goes last so its own text is not expanded again
+function ExpandTextVars(const AText: string): string;
+var
+  clip: string;
+begin
+  Result := AText;
+  if (Pos('{', Result) = 0)
+  then Exit;
+
+  Result := StringReplace(Result, '{datetime}',
+    DateToStr(Date) + ' ' + FormatDateTime(FormatSettings.ShortTimeFormat, Time), [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '{date}', DateToStr(Date), [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '{time}', FormatDateTime(FormatSettings.ShortTimeFormat, Time), [rfReplaceAll, rfIgnoreCase]);
+
+  if (Pos('{clipboard}', LowerCase(Result)) > 0)
+  then begin
+    try
+      clip := Clipboard.AsText;
+    except
+      clip := '';  // the clipboard is busy or has no text
+    end;
+    Result := StringReplace(Result, '{clipboard}', clip, [rfReplaceAll, rfIgnoreCase]);
+  end;
+end;
+
 procedure TypeText(const AText: string);
 var inputs: TArray<TInput>;
     i: Integer;
@@ -345,7 +414,9 @@ begin
       begin
         if (it.DelayMs > 0) then Sleep(it.DelayMs);
         try
-          LBShellExecute(0, 'open', it.Target, it.Params);
+          if it.Admin
+          then LBShellExecute(0, 'runas', it.Target, it.Params)
+          else LBShellExecute(0, 'open', it.Target, it.Params);
         except
           // an element that fails must not stop the rest of the sequence
         end;
@@ -370,6 +441,94 @@ begin
     end).Start;
 end;
 
+{ ---------- internal commands (energy and system) ---------- }
+
+function LBSetSuspendState(Hibernate, ForceCritical, DisableWakeEvent: BOOL): BOOL; stdcall;
+  external 'powrprof.dll' name 'SetSuspendState';
+
+function LBAdjustTokenPrivileges(TokenHandle: THandle; DisableAllPrivileges: BOOL; NewState: PTokenPrivileges;
+  BufferLength: DWORD; PreviousState: PTokenPrivileges; ReturnLength: PDWORD): BOOL; stdcall;
+  external 'advapi32.dll' name 'AdjustTokenPrivileges';
+
+{ The user must agree before the computer restarts or shuts down }
+function ConfirmPower(const AKey, ADefault: string): Boolean;
+begin
+  Result := (MessageBox(0, PChar(L10NFind(AKey, ADefault)), 'Linkbar',
+    MB_YESNO or MB_ICONQUESTION or MB_DEFBUTTON2 or MB_TOPMOST) = IDYES);
+end;
+
+procedure ExitWindows(const AFlags: UINT);
+var
+  token: THandle;
+  tp: TTokenPrivileges;
+begin
+  if OpenProcessToken(GetCurrentProcess, TOKEN_ADJUST_PRIVILEGES or TOKEN_QUERY, token)
+  then try
+    LookupPrivilegeValue(nil, 'SeShutdownPrivilege', tp.Privileges[0].Luid);
+    tp.PrivilegeCount := 1;
+    tp.Privileges[0].Attributes := SE_PRIVILEGE_ENABLED;
+    LBAdjustTokenPrivileges(token, False, @tp, 0, nil, nil);
+  finally
+    CloseHandle(token);
+  end;
+  ExitWindowsEx(AFlags, 0);
+end;
+
+{ Light / dark mode of Windows and of the apps; the shell is told so it repaints }
+procedure ToggleWindowsTheme;
+const
+  PERSONALIZE = 'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize';
+var
+  reg: TRegistry;
+  light: Integer;
+  res: DWORD_PTR;
+begin
+  reg := TRegistry.Create(KEY_READ or KEY_WRITE);
+  try
+    reg.RootKey := HKEY_CURRENT_USER;
+    if reg.OpenKey(PERSONALIZE, False)
+    then begin
+      if reg.ValueExists('AppsUseLightTheme')
+      then light := reg.ReadInteger('AppsUseLightTheme')
+      else light := 1;
+      if (light = 0)
+      then light := 1
+      else light := 0;
+      reg.WriteInteger('AppsUseLightTheme', light);
+      reg.WriteInteger('SystemUsesLightTheme', light);
+      reg.CloseKey;
+    end;
+  finally
+    reg.Free;
+  end;
+  SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, LPARAM(PChar('ImmersiveColorSet')),
+    SMTO_ABORTIFHUNG, 1000, @res);
+end;
+
+procedure RunCommand(const ACommand: string);
+begin
+  if SameText(ACommand, CMD_EMPTY_BIN)
+  then RunEmptyRecycleBin
+  else if SameText(ACommand, CMD_LOCK)
+  then LockWorkStation
+  else if SameText(ACommand, CMD_SLEEP)
+  then LBSetSuspendState(False, False, False)
+  else if SameText(ACommand, CMD_RESTART)
+  then begin
+    if ConfirmPower('Action.ConfirmRestart', 'Restart the computer now?')
+    then ExitWindows(EWX_REBOOT);
+  end
+  else if SameText(ACommand, CMD_SHUTDOWN)
+  then begin
+    if ConfirmPower('Action.ConfirmShutdown', 'Shut down the computer now?')
+    then ExitWindows(EWX_SHUTDOWN);
+  end
+  else if SameText(ACommand, CMD_MONITOR)
+  then PostMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2)
+  else if SameText(ACommand, CMD_THEME)
+  then ToggleWindowsTheme;
+end;
+
 procedure RunAction(const AData: TActionData; ATarget: HWND);
 var t: Cardinal;
     combos: TArray<TKeyCombo>;
@@ -381,8 +540,7 @@ begin
   end;
   if (AData.Mode = amCommand)
   then begin
-    if SameText(AData.Command, CMD_EMPTY_BIN)
-    then RunEmptyRecycleBin;
+    RunCommand(AData.Command);
     Exit;
   end;
 
@@ -402,7 +560,7 @@ begin
       then SendCombos(combos);
     amText:
       if (AData.Text <> '')
-      then TypeText(AData.Text);
+      then TypeText(ExpandTextVars(AData.Text));
   end;
 end;
 
@@ -483,6 +641,7 @@ begin
         it.Target := Trim(ini.ReadString(SEC_MULTI, 'Target' + IntToStr(i), ''));
         it.Params := ini.ReadString(SEC_MULTI, 'Params' + IntToStr(i), '');
         it.DelayMs := EnsureRange(ini.ReadInteger(SEC_MULTI, 'Delay' + IntToStr(i), 0), 0, MAX_MULTI_DELAY);
+        it.Admin := (ini.ReadInteger(SEC_MULTI, 'Admin' + IntToStr(i), 0) <> 0);
         if (it.Target <> '')
         then AData.Items := AData.Items + [it];
       end;
@@ -542,6 +701,7 @@ begin
         sl.Add('Target' + IntToStr(i + 1) + '=' + AData.Items[i].Target);
         sl.Add('Params' + IntToStr(i + 1) + '=' + AData.Items[i].Params);
         sl.Add('Delay' + IntToStr(i + 1) + '=' + IntToStr(AData.Items[i].DelayMs));
+        sl.Add('Admin' + IntToStr(i + 1) + '=' + IntToStr(Ord(AData.Items[i].Admin)));
       end;
     end;
     try
@@ -623,7 +783,7 @@ begin
       if (AData.Glyph <> 0) then s := Char(AData.Glyph)
       else if (AData.Mode = amText) then s := Char(GLYPH_TEXT)
       else if (AData.Mode = amMulti) then s := Char(GLYPH_MULTI)
-      else if (AData.Mode = amCommand) then s := Char(GLYPH_DELETE)
+      else if (AData.Mode = amCommand) then s := Char(CommandGlyph(AData.Command))
       else s := Char(GLYPH_KEYBOARD);
       family := 'Segoe MDL2 Assets';
       style := FontStyleRegular;
@@ -701,7 +861,7 @@ begin
   case Data.Mode of
     amText:  Result := Caption + '  (' + L10NFind('Action.TypesText', 'types a text') + ')';
     amMulti: Result := Caption + '  (' + Format(L10NFind('Action.MultiCount', '%d commands'), [Length(Data.Items)]) + ')';
-    amCommand: Result := Caption + '  (' + L10NFind('Action.CmdEmptyRecycleBin', 'empties the Recycle Bin') + ')';
+    amCommand: Result := Caption + '  (' + CommandDescription(Data.Command) + ')';
     else     Result := Caption + '  (' + Data.Keys + ')';
   end;
 end;
@@ -720,6 +880,7 @@ type
     lbItems: TListBox;
     btnItemAdd, btnItemRemove, btnItemUp, btnItemDown, btnBrowse: TButton;
     edtTarget, edtParams, edtDelay: TEdit;
+    chbAdmin: TCheckBox;
     edtIconText: TEdit;
     btnColor, btnColorDefault: TButton;
     pbPreview: TPaintBox;
@@ -847,7 +1008,7 @@ begin
   rbText := TRadioButton.Create(Self);
   rbText.Parent := Self;
   rbText.SetBounds(S(12), y, S(LW + CW), S(19));
-  rbText.Caption := L10NFind('Action.ModeText', 'Type a text');
+  rbText.Caption := L10NFind('Action.ModeText', 'Type a text (supports {date}, {time}, {clipboard})');
   rbText.OnClick := ModeClick;
   Inc(y, S(24));
 
@@ -924,6 +1085,11 @@ begin
   edtDelay.NumbersOnly := True;
   edtDelay.MaxLength := 5;
   edtDelay.OnChange := ItemFieldChange;
+  chbAdmin := TCheckBox.Create(Self);
+  chbAdmin.Parent := Self;
+  chbAdmin.SetBounds(x2 + S(80), y + S(2), S(CW - 80), S(19));
+  chbAdmin.Caption := L10NFind('Action.MultiAdmin', 'Run as administrator');
+  chbAdmin.OnClick := ItemFieldChange;
   Inc(y, S(36));
 
   // Icon
@@ -1003,6 +1169,7 @@ begin
   btnBrowse.Enabled := edtTarget.Enabled;
   edtParams.Enabled := edtTarget.Enabled;
   edtDelay.Enabled := edtTarget.Enabled;
+  chbAdmin.Enabled := edtTarget.Enabled;
 end;
 
 function ItemCaption(const AItem: TMultiItem): string;
@@ -1012,6 +1179,8 @@ begin
   else Result := Trim(AItem.Target + ' ' + AItem.Params);
   if (AItem.DelayMs > 0)
   then Result := Result + '   [+' + IntToStr(AItem.DelayMs) + ' ms]';
+  if AItem.Admin
+  then Result := Result + '   [admin]';
 end;
 
 { Rebuilds the list and selects ASelect (-1 = none); also loads the fields }
@@ -1036,11 +1205,13 @@ begin
       edtTarget.Text := FData.Items[lbItems.ItemIndex].Target;
       edtParams.Text := FData.Items[lbItems.ItemIndex].Params;
       edtDelay.Text := IntToStr(FData.Items[lbItems.ItemIndex].DelayMs);
+      chbAdmin.Checked := FData.Items[lbItems.ItemIndex].Admin;
     end
     else begin
       edtTarget.Text := '';
       edtParams.Text := '';
       edtDelay.Text := '';
+      chbAdmin.Checked := False;
     end;
   finally
     FUpdating := False;
@@ -1059,6 +1230,7 @@ begin
   it.Target := '';
   it.Params := '';
   it.DelayMs := 0;
+  it.Admin := False;
   FData.Items := FData.Items + [it];
   RefreshItems(High(FData.Items));
   edtTarget.SetFocus;
@@ -1098,6 +1270,7 @@ begin
   if TryStrToInt(edtDelay.Text, v)
   then FData.Items[i].DelayMs := EnsureRange(v, 0, MAX_MULTI_DELAY)
   else FData.Items[i].DelayMs := 0;
+  FData.Items[i].Admin := chbAdmin.Checked;
   lbItems.Items[i] := ItemCaption(FData.Items[i]);
   lbItems.ItemIndex := i;
 end;

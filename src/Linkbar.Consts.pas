@@ -118,6 +118,7 @@ const
   DEF_TOOLTIP_SHOW              = True;
   DEF_MODERN_STYLE              = False;
   DEF_SYS_WIDGETS               = False;
+  DEF_CPU_TEMP                  = False;
   DEF_BAR_STYLE                 = 0;    // 0 = normal (screen edge), 1 = dock (Mac-like)
   DEF_ZOOM                      = 100;  // magnification in %, 100 = off
   DEF_DOCK_POS                  = 500;  // dock position along the edge, 0..1000 (500 = centered)
@@ -172,6 +173,7 @@ const
   INI_TOOLTIP_SHOW              = 'tooltipshow';
   INI_MODERN_STYLE              = 'modernstyle';
   INI_SYS_WIDGETS               = 'syswidgets';
+  INI_CPU_TEMP                  = 'cputemp';
   INI_BAR_STYLE                 = 'barstyle';
   INI_ZOOM                      = 'zoom';
   INI_DOCK_POS                  = 'dockpos';

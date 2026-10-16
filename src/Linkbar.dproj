@@ -169,6 +169,7 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="Linkbar.Bar.Commands.pas"/>
         <DCCReference Include="Linkbar.Bar.Presenter.pas"/>
         <DCCReference Include="Linkbar.Bar.Metrics.pas"/>
+        <DCCReference Include="Linkbar.Bar.CpuTemp.pas"/>
         <DCCReference Include="Linkbar.Bar.ItemActions.pas"/>
         <DCCReference Include="Linkbar.Bar.Keyboard.pas"/>
         <None Include="linkbar.inc"/>

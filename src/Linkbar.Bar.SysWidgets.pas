@@ -1,6 +1,7 @@
 {*******************************************************}
 {          Linkbar - Windows desktop toolbar            }
-{   CPU / RAM widgets at the end of the bar: sampling   }
+{   CPU / RAM / temperature widgets at the end of the  }
+{   bar: sampling                                       }
 {   of the system load, layout and drawing, and the     }
 {   rectangle of the ">>" / "<<" collapse button        }
 {*******************************************************}
@@ -12,8 +13,8 @@ unit Linkbar.Bar.SysWidgets;
 interface
 
 uses
-  Windows, Types,
-  Linkbar.Graphics, Linkbar.Bar.Host;
+  Windows, Types, Classes,
+  Linkbar.Graphics, Linkbar.Bar.Host, Linkbar.Bar.CpuTemp;
 
 type
   TSysWidgets = class
@@ -24,8 +25,21 @@ type
     FPrevIdle, FPrevKernel, FPrevUser: UInt64;
     FCollapseRect: TRect;              // interactive area of the ">>" / "<<" button
     FCollapseHot: Boolean;             // the mouse is over the button
+    FTemp: TCpuTemperature;            // CPU temperature (thread of its own)
+    FTempEnabled: Boolean;
+    FCells: Integer;                   // cells the bar was laid out with
+    FOnCellsChanged: TNotifyEvent;
+    procedure SetEnabled(const AValue: Boolean);
+    procedure SetTempEnabled(const AValue: Boolean);
+    // The reading thread only runs while the widgets and the temperature are on
+    procedure ApplyTemp;
+    // Tells the bar when the number of cells changed (the sensor appeared or went away)
+    procedure CheckCells;
+    function CellCount: Integer;
+    procedure CellInfo(const AIndex: Integer; out APercent: Integer; out AText: string; out AHigh: Boolean);
   public
     constructor Create(const AHost: ILinkbarHost);
+    destructor Destroy; override;
     // Reads the current CPU and RAM load
     procedure Sample;
     // Space kept at the end of the bar (0 when the widgets are off)
@@ -33,7 +47,11 @@ type
     // Area of the widgets inside a bar of the given size
     function WidgetRect(const AWidth, AHeight: Integer): TRect;
     procedure Draw(const ABitmap: THBitmap; const AWidth, AHeight: Integer);
-    property Enabled: Boolean read FEnabled write FEnabled;
+    // Temperature of the CPU in degrees Celsius (NO_TEMPERATURE when there is no sensor)
+    function Temperature: Integer;
+    property Enabled: Boolean read FEnabled write SetEnabled;
+    property TempEnabled: Boolean read FTempEnabled write SetTempEnabled;
+    property OnCellsChanged: TNotifyEvent read FOnCellsChanged write FOnCellsChanged;
     property CpuLoad: Integer read FCpuLoad;
     property RamLoad: Integer read FRamLoad;
     property CollapseRect: TRect read FCollapseRect;
@@ -46,7 +64,8 @@ uses
   SysUtils, Math, Graphics, Forms, Themes, GdiPlus, Linkbar.Consts, Linkbar.Theme;
 
 const
-  SYSWIDGET_COUNT = 2; // CPU, RAM
+  SYSWIDGET_COUNT = 2; // CPU, RAM (the temperature is a third cell when there is a reading)
+  SYSWIDGET_MAX = 3;
 
 function LB_GetSystemTimes(out AIdleTime, AKernelTime, AUserTime: TFileTime): BOOL; stdcall;
   external kernel32 name 'GetSystemTimes';
@@ -60,6 +79,88 @@ constructor TSysWidgets.Create(const AHost: ILinkbarHost);
 begin
   inherited Create;
   FHost := AHost;
+  FTemp := TCpuTemperature.Create;
+  FCells := SYSWIDGET_COUNT;
+end;
+
+destructor TSysWidgets.Destroy;
+begin
+  FTemp.Free;  // stops its thread
+  inherited;
+end;
+
+procedure TSysWidgets.ApplyTemp;
+begin
+  if FEnabled and FTempEnabled
+  then FTemp.Start
+  else FTemp.Stop;
+end;
+
+procedure TSysWidgets.SetEnabled(const AValue: Boolean);
+begin
+  FEnabled := AValue;
+  ApplyTemp;
+  FCells := CellCount;  // the bar is laid out again by who changes this
+end;
+
+procedure TSysWidgets.SetTempEnabled(const AValue: Boolean);
+begin
+  FTempEnabled := AValue;
+  ApplyTemp;
+  CheckCells;
+end;
+
+function TSysWidgets.CellCount: Integer;
+begin
+  if FEnabled and FTempEnabled and FTemp.Available
+  then Result := SYSWIDGET_MAX
+  else Result := SYSWIDGET_COUNT;
+end;
+
+procedure TSysWidgets.CheckCells;
+begin
+  if (CellCount <> FCells)
+  then begin
+    FCells := CellCount;
+    if Assigned(FOnCellsChanged)
+    then FOnCellsChanged(Self);
+  end;
+end;
+
+function TSysWidgets.Temperature: Integer;
+begin
+  Result := FTemp.Value;
+end;
+
+procedure TSysWidgets.CellInfo(const AIndex: Integer; out APercent: Integer; out AText: string; out AHigh: Boolean);
+var t: Integer;
+begin
+  case AIndex of
+    0: begin
+         APercent := FCpuLoad;
+         AText := IntToStr(FCpuLoad) + '%';
+         AHigh := (FCpuLoad > 85);
+       end;
+    1: begin
+         APercent := FRamLoad;
+         AText := IntToStr(FRamLoad) + '%';
+         AHigh := (FRamLoad > 85);
+       end;
+  else
+    t := FTemp.Value;
+    if (t = NO_TEMPERATURE)
+    then begin
+      APercent := 0;
+      AText := '--';
+      AHigh := False;
+    end
+    else begin
+      // bar: 30 to 100 degrees; red from 80
+      APercent := EnsureRange(Round((t - 30) * 100 / 70), 0, 100);
+      AText := IntToStr(t) + #$00B0 + 'C';
+      AHigh := (t >= 80);
+    end;
+  end;
 end;
 
 { Space kept at the end of the bar }
@@ -68,8 +169,8 @@ begin
   if not FEnabled
   then Exit(0);
   if AVertical
-  then Result := SYSWIDGET_COUNT * Max(FHost.BarButtonSize.cy, FHost.ScaleValue(40)) + FHost.ScaleValue(8) + FHost.ScaleValue(24)
-  else Result := SYSWIDGET_COUNT * Max(FHost.BarButtonSize.cx, FHost.ScaleValue(56)) + FHost.ScaleValue(8) + FHost.ScaleValue(24);
+  then Result := CellCount * Max(FHost.BarButtonSize.cy, FHost.ScaleValue(40)) + FHost.ScaleValue(8) + FHost.ScaleValue(24)
+  else Result := CellCount * Max(FHost.BarButtonSize.cx, FHost.ScaleValue(56)) + FHost.ScaleValue(8) + FHost.ScaleValue(24);
 end;
 
 function TSysWidgets.WidgetRect(const AWidth, AHeight: Integer): TRect;
@@ -112,16 +213,20 @@ begin
   mem.dwLength := SizeOf(mem);
   if GlobalMemoryStatusEx(mem)
   then FRamLoad := EnsureRange(Integer(mem.dwMemoryLoad), 0, 100);
+
+  CheckCells;
 end;
 
 procedure TSysWidgets.Draw(const ABitmap: THBitmap; const AWidth, AHeight: Integer);
 const
-  CAPTIONS: array[0..SYSWIDGET_COUNT-1] of string = ('CPU', 'RAM');
-  COLORS: array[0..SYSWIDGET_COUNT-1] of Cardinal = ($FF3B82F6, $FF22C55E); // blue, green
+  CAPTIONS: array[0..SYSWIDGET_MAX-1] of string = ('CPU', 'RAM', 'TMP');
+  COLORS: array[0..SYSWIDGET_MAX-1] of Cardinal = ($FF3B82F6, $FF22C55E, $FFF59E0B); // blue, green, amber
   COLOR_HIGH: Cardinal = $FFEF4444; // red when > 85%
 var
   area, cell, bar, fill, tr: TRect;
-  i, value, pad, barW, barH, cellLen, zoff: Integer;
+  i, value, pad, barW, barH, cellLen, zoff, cells: Integer;
+  valueText: string;
+  high: Boolean;
   vertical: Boolean;
   gp: IGPGraphics;
   brushTrack, brushFill: IGPBrush;
@@ -133,6 +238,7 @@ var
   bs: TSize;
 begin
   bs := FHost.BarButtonSize;
+  cells := CellCount;
   if not FEnabled
   then Exit;
   area := WidgetRect(AWidth, AHeight);
@@ -152,8 +258,8 @@ begin
   barW := Max(3, FHost.ScaleValue(5));
   zoff := FHost.ZoomExtra div 2;  // items are centered in the extra zoom thickness
   if vertical
-  then cellLen := (area.Height - pad * 2) div SYSWIDGET_COUNT
-  else cellLen := (area.Width - pad * 2) div SYSWIDGET_COUNT;
+  then cellLen := (area.Height - pad * 2) div cells
+  else cellLen := (area.Width - pad * 2) div cells;
 
   if (GlobalLook = ELookLight)
   then trackColor := $33000000
@@ -171,11 +277,9 @@ begin
   gp := TGPGraphics.Create(dc);
   brushTrack := TGPSolidBrush.Create(trackColor);
   try
-    for i := 0 to SYSWIDGET_COUNT-1 do
+    for i := 0 to cells-1 do
     begin
-      if (i = 0)
-      then value := FCpuLoad
-      else value := FRamLoad;
+      CellInfo(i, value, valueText, high);
 
       // Cell (only the button-height part of the first line is used)
       if vertical
@@ -191,7 +295,7 @@ begin
       fill.Top := bar.Bottom - Round(bar.Height * value / 100);
       if (fill.Height > 0)
       then begin
-        if (value > 85)
+        if high
         then fillColor := COLOR_HIGH
         else fillColor := COLORS[i];
         brushFill := TGPSolidBrush.Create(fillColor);
@@ -264,11 +368,9 @@ begin
   then Exit;
   fnt0 := SelectObject(dc, Screen.IconFont.Handle);
   try
-    for i := 0 to SYSWIDGET_COUNT-1 do
+    for i := 0 to cells-1 do
     begin
-      if (i = 0)
-      then value := FCpuLoad
-      else value := FRamLoad;
+      CellInfo(i, value, valueText, high);
 
       if vertical
       then cell := Rect(area.Left + zoff, area.Top + pad + i * cellLen, area.Left + zoff + bs.cx, area.Top + pad + (i + 1) * cellLen)
@@ -281,7 +383,7 @@ begin
       s := CAPTIONS[i];
       DrawGlassText(dc, s, tr, DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX, 0, textColor);
       tr := Rect(bar.Right + pad, bar.Top + bar.Height div 2, cell.Right, bar.Bottom + pad);
-      s := IntToStr(value) + '%';
+      s := valueText;
       DrawGlassText(dc, s, tr, DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX, 0, textColor);
     end;
 

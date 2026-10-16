@@ -26,6 +26,7 @@
 - `Linkbar.dproj` - 2026-10-16 19:28
 - `Linkbar.dproj` - 2026-10-16 19:30
 - `Linkbar.dproj` - 2026-10-16 19:34
+- `Linkbar.dproj` - 2026-10-16 20:08
 
 **Pas**:
 - `mUnit.pas` - 2026-10-10 16:03
@@ -105,6 +106,16 @@
 - `mUnit.pas` - 2026-10-16 19:39
 - `mUnit.pas` - 2026-10-16 19:40
 - `mUnit.pas` - 2026-10-16 19:42
+- `Linkbar.Actions.pas` - 2026-10-16 19:56
+- `Linkbar.Actions.pas` - 2026-10-16 19:57
+- `Linkbar.Actions.pas` - 2026-10-16 19:58
+- `Linkbar.Actions.pas` - 2026-10-16 19:59
+- `Linkbar.Actions.pas` - 2026-10-16 20:01
+- `Linkbar.Bar.CpuTemp.pas` - 2026-10-16 20:08
+- `Linkbar.Bar.SysWidgets.pas` - 2026-10-16 20:13
+- `mUnit.pas` - 2026-10-16 20:13
+- `Linkbar.SettingsForm.pas` - 2026-10-16 20:13
+- `Linkbar.Consts.pas` - 2026-10-16 20:13
 
 ## Bitácora Lógica y Decisiones
 
