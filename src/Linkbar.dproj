@@ -152,6 +152,7 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="Linkbar.Bar.SysWidgets.pas"/>
         <DCCReference Include="Linkbar.Bar.Collapse.pas"/>
         <DCCReference Include="Linkbar.Bar.Fullscreen.pas"/>
+        <DCCReference Include="Linkbar.Bar.TrayIcon.pas"/>
         <DCCReference Include="Linkbar.Bar.Thumbs.pas"/>
         <DCCReference Include="Linkbar.Bar.Running.pas"/>
         <DCCReference Include="Linkbar.Bar.Launcher.pas"/>

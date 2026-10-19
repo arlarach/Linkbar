@@ -124,6 +124,7 @@ const
   DEF_DOCK_POS                  = 500;  // dock position along the edge, 0..1000 (500 = centered)
   DEF_COLLAPSED                 = False; // bar collapsed with ">>" (pinned items + CPU/RAM only)
   DEF_HIDE_FULLSCREEN           = False;
+  DEF_TRAYICON                  = True;  // icon in the notification area
   DEF_AUTOCOLLAPSE              = 0;     // seconds without using the bar before collapsing it, 0 = off
   AUTOCOLLAPSE_DEFAULT_SECS     = 30;    // value used when it is turned on from the menu / settings
   DEF_ANIMATE_COLLAPSE          = True; // animate ">>" collapse / expand (dock mode)
@@ -180,6 +181,7 @@ const
   INI_COLLAPSED                 = 'collapsed';
   INI_PROFILE                   = 'profile';
   INI_HIDE_FULLSCREEN           = 'hidefullscreen';
+  INI_TRAYICON                  = 'trayicon';
   INI_COLLAPSE_FULLSCREEN       = 'collapsefullscreen';
   INI_ANIMATE_COLLAPSE          = 'animatecollapse';
   INI_AUTOCOLLAPSE              = 'autocollapse';

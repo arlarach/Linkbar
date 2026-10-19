@@ -20,6 +20,7 @@ type
   IFullscreenHost = interface(ILinkbarHost)
     ['{5E92C0B7-14D3-4A68-B3F5-9D1E7A2C4086}']
     function BarIsTaskbarIcon: Boolean;
+    function BarStayOnTop: Boolean;
   end;
 
   TFullscreenWatcher = class
@@ -39,6 +40,10 @@ type
     procedure Check;
     // Setter with effect on the window (the property only stores the value)
     procedure ChangeHide(const AValue: Boolean);
+    // Puts the bar back in front when "always on top" is on and Windows left it behind
+    procedure EnsureOnTop;
+    // Shows the bar again (if hidden by a full screen app) and puts it in front
+    procedure BringToFront;
     property HideOnFullscreen: Boolean read FHide write FHide;
     property HiddenByFullscreen: Boolean read FHidden;
     property LastForeignWnd: HWND read FLastForeign write FLastForeign;
@@ -139,8 +144,14 @@ begin
       FHost.BarDismissPopups;
       ShowWindow(FHost.BarHandle, SW_HIDE);
     end
-    else ShowWindow(FHost.BarHandle, SW_SHOWNA);
+    else begin
+      ShowWindow(FHost.BarHandle, SW_SHOWNA);
+      EnsureOnTop;
+    end;
   end;
+
+  // Windows can leave the bar behind (the "full screen app ended" notice gets lost)
+  EnsureOnTop;
 
   if (collapseIt <> FCollapse.CollapsedByFullscreen)
   then begin
@@ -158,7 +169,36 @@ begin
   then begin
     FHidden := False;
     ShowWindow(FHost.BarHandle, SW_SHOWNA);
+    EnsureOnTop;
   end;
+end;
+
+procedure TFullscreenWatcher.EnsureOnTop;
+var wnd: HWND;
+begin
+  wnd := FHost.BarHandle;
+  if FHidden or not FHost.BarStayOnTop or FHost.BarIsTaskbarIcon
+     or not IsWindowVisible(wnd)
+     or ((GetWindowLong(wnd, GWL_EXSTYLE) and WS_EX_TOPMOST) <> 0)
+  then Exit;
+  SetWindowPos(wnd, HWND_TOPMOST, 0, 0, 0, 0,
+    SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_NOOWNERZORDER);
+end;
+
+procedure TFullscreenWatcher.BringToFront;
+var wnd: HWND;
+begin
+  wnd := FHost.BarHandle;
+  if FHidden
+  then begin
+    FHidden := False;
+    ShowWindow(wnd, SW_SHOWNA);
+  end;
+  if FHost.BarStayOnTop
+  then SetWindowPos(wnd, HWND_TOPMOST, 0, 0, 0, 0,
+         SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_NOOWNERZORDER)
+  else SetWindowPos(wnd, HWND_TOP, 0, 0, 0, 0,
+         SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_NOOWNERZORDER);
 end;
 
 end.

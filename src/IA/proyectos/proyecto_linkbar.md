@@ -27,6 +27,7 @@
 - `Linkbar.dproj` - 2026-10-16 19:30
 - `Linkbar.dproj` - 2026-10-16 19:34
 - `Linkbar.dproj` - 2026-10-16 20:08
+- `Linkbar.dproj` - 2026-10-19 13:42 Referencia a Linkbar.Bar.TrayIcon.pas [modelo: claude-sonnet-5-5]
 
 **Pas**:
 - `mUnit.pas` - 2026-10-10 16:03
@@ -116,6 +117,11 @@
 - `mUnit.pas` - 2026-10-16 20:13
 - `Linkbar.SettingsForm.pas` - 2026-10-16 20:13
 - `Linkbar.Consts.pas` - 2026-10-16 20:13
+- `Linkbar.Bar.LinkList.pas` - 2026-10-16 20:30
+- `mUnit.pas` - 2026-10-19 13:42 Menu siempre al frente / ocultar en pantalla completa, icono de bandeja [modelo: claude-sonnet-5-5]
+- `Linkbar.Bar.Fullscreen.pas` - 2026-10-19 13:42 EnsureOnTop y BringToFront: la barra vuelve al frente [modelo: claude-sonnet-5-5]
+- `Linkbar.Bar.TrayIcon.pas` - 2026-10-19 13:42 Unidad nueva: icono en el área de notificación [modelo: claude-sonnet-5-5]
+- `Linkbar.Consts.pas` - 2026-10-19 13:42 INI_TRAYICON / DEF_TRAYICON [modelo: claude-sonnet-5-5]
 
 ## Bitácora Lógica y Decisiones
 

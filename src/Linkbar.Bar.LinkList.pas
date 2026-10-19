@@ -52,7 +52,17 @@ type
 implementation
 
 uses
-  SysUtils, Classes, StrUtils, Linkbar.Consts;
+  SysUtils, Classes, StrUtils, System.IOUtils, Linkbar.Consts; // TEMP-LOG (System.IOUtils)
+
+// TEMP-LOG: diagnostico del renombrado desde la carpeta (se retira despues)
+procedure TempLog(const AText: string);
+begin
+  try
+    TFile.AppendAllText('E:\Linkbar\src\IA\TMP\dirwatch.log',
+      FormatDateTime('hh:nn:ss.zzz', Now) + ' ' + AText + sLineBreak, TEncoding.UTF8);
+  except
+  end;
+end;
 
 constructor TLinkList.Create(const AHost: ILinkListHost; const APinned: TPinnedItems; const AZoom: TBarZoom);
 begin
@@ -158,6 +168,7 @@ var ext: string;
     hash: Cardinal;
     index: integer;
 begin
+  TempLog('event ' + IntToStr(Ord(AAction)) + ' "' + AFileName + '" hash=' + IntToHex(StrToHash(AFileName), 8)); // TEMP-LOG
   // Skip unsupported files
   ext := ExtractFileExt(AFileName);
   if not MatchText(ext, ES_ITEMS_ARRAY) then Exit;
@@ -178,6 +189,7 @@ begin
   waRemoved:
   begin
     index := FindItemByHash(StrToHash(AFileName));
+    TempLog('  removed: found=' + IntToStr(index)); // TEMP-LOG
     if (index <> ITEM_NONE)
     then FHost.BarDeleteItem(index);
   end;
@@ -199,6 +211,7 @@ begin
   waRenamedNew:
   begin
     index := FindItemByHash(FRenamedOldHash);
+    TempLog('  renamedNew: oldHash=' + IntToHex(FRenamedOldHash, 8) + ' found=' + IntToStr(index)); // TEMP-LOG
     if (index <> ITEM_NONE)
     then begin
       var item := FHost.BarItems[index];
@@ -215,12 +228,14 @@ end;
 procedure TLinkList.RescanTick;
 begin
   FHost.BarRescanTimer(False);
+  TempLog('tick'); // TEMP-LOG
 
   for var i := FHost.BarItems.Count-1 downto 0 do
   begin
     const item = FHost.BarItems[i];
     if item.NeedLoad
     then begin
+      TempLog('  reload ' + item.FileName + ' (caption was ' + item.Caption + ')'); // TEMP-LOG
       if item.LoadFromFile(item.FileName)
       then FHost.BarItems.LoadIcon(item)
       else FHost.BarDeleteItem(i);

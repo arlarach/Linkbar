@@ -22,7 +22,7 @@ uses
   Linkbar.Bar.AutoHide, Linkbar.Bar.LinkList,
   Linkbar.Bar.ProfileMenu, Linkbar.Bar.Commands,
   Linkbar.Bar.Presenter, Linkbar.Bar.Metrics,
-  Linkbar.Bar.ItemActions, Linkbar.Bar.Keyboard;
+  Linkbar.Bar.ItemActions, Linkbar.Bar.Keyboard, Linkbar.Bar.TrayIcon;
 
 type
   TLinkbarWcl = class(TLinkbarCustomFrom, ILinkbarHost, ICollapseHost, IFullscreenHost, IThumbsHost, ILauncherHost, IPinnedHost, IActionButtonsHost, IDockHost, IDropTargetHost, IAutoHideHost, ILinkListHost, IProfileHost, ICommandsHost, IItemActionsHost, IKeyboardHost)
@@ -109,6 +109,9 @@ type
     FProfiles: TProfileManager;  // profile folders (current profile '' = main)
     FSaveQueue: TFileSaveQueue;  // list files write queue (retries when locked)
     imNewAction, imEditAction, imDeleteAction, imActionLine, imProfiles, imPinned, imPinAllActions, imUnpinAll, imAnimateCollapse, imAutoCollapse: TMenuItem;
+    imStayOnTop, imHideFullscreen, imTrayFront: TMenuItem;
+    FTray: TBarTrayIcon;         // icon in the notification area
+    FTrayEnabled: Boolean;
     FSysWidgets: TSysWidgets;          // CPU / RAM widgets
     FConfig: TBarConfig;         // settings kept in the settings file
     FExtDragIconSize: Integer;
@@ -133,6 +136,12 @@ type
     function GetCollapseOnFullscreen: Boolean;
     procedure imAnimateCollapseClick(Sender: TObject);
     procedure imAutoCollapseClick(Sender: TObject);
+    procedure imStayOnTopClick(Sender: TObject);
+    procedure imHideFullscreenClick(Sender: TObject);
+    procedure imTrayFrontClick(Sender: TObject);
+    // Text of the "always in front" / "hide on full screen" items: it tells the current state
+    procedure UpdateZOrderCaptions;
+    procedure ShowTrayMenu;
   private
     procedure UpdateWindowSize;
     procedure SetLayout(AValue: TPanelLayout);
@@ -228,6 +237,7 @@ type
     // IFullscreenHost
     function BarHandle: HWND;
     function BarIsTaskbarIcon: Boolean;
+    function BarStayOnTop: Boolean;
     // IThumbsHost
     function BarIsItem(const AIndex: Integer): Boolean;
     function BarItemRunning(const AIndex: Integer): Boolean;
@@ -462,6 +472,7 @@ const
 
   LM_SHELLNOTIFY = WM_USER + 88;
   LM_TASKBARMODE = WM_USER + 89;
+  LM_TRAYICON = WM_USER + 90;
   TIMER_SYS_WIDGETS = 17;
   TIMER_RUNNING = 18;
   TIMER_FOREGROUND = 20;
@@ -719,6 +730,7 @@ begin
     else FProfiles.Current := '';
   end;
   FFullscreen.HideOnFullscreen     := settings.Read(INI_HIDE_FULLSCREEN, DEF_HIDE_FULLSCREEN);
+  FTrayEnabled          := settings.Read(INI_TRAYICON, DEF_TRAYICON);
   FCollapse.OnFullscreen := settings.Read(INI_COLLAPSE_FULLSCREEN, DEF_COLLAPSE_FULLSCREEN);
   FCollapse.AnimateEnabled      := settings.Read(INI_ANIMATE_COLLAPSE, DEF_ANIMATE_COLLAPSE);
   FCollapse.AutoSecs     := settings.Read(INI_AUTOCOLLAPSE, DEF_AUTOCOLLAPSE, 0, 3600);
@@ -823,6 +835,7 @@ begin
     // Write
     FConfig.Save(settings, Align, BackgroundColor);
     settings.Write(INI_HIDE_FULLSCREEN, FFullscreen.HideOnFullscreen);
+    settings.Write(INI_TRAYICON, FTrayEnabled);
     settings.Write(INI_COLLAPSE_FULLSCREEN, FCollapse.OnFullscreen);
     settings.Write(INI_ANIMATE_COLLAPSE, FCollapse.AnimateEnabled);
     settings.Write(INI_AUTOCOLLAPSE, FCollapse.AutoSecs);
@@ -951,6 +964,18 @@ begin
   imAutoCollapse := TMenuItem.Create(pMenu);
   imAutoCollapse.OnClick := imAutoCollapseClick;
   pMenu.Items.Insert(4, imAutoCollapse);
+  // Always in front / hide when an app is full screen (bar menu and tray menu)
+  imStayOnTop := TMenuItem.Create(pMenu);
+  imStayOnTop.OnClick := imStayOnTopClick;
+  pMenu.Items.Insert(pMenu.Items.IndexOf(imProperties), imStayOnTop);
+  imHideFullscreen := TMenuItem.Create(pMenu);
+  imHideFullscreen.OnClick := imHideFullscreenClick;
+  pMenu.Items.Insert(pMenu.Items.IndexOf(imProperties), imHideFullscreen);
+  // Only in the tray menu (the bar menu skips it)
+  imTrayFront := TMenuItem.Create(pMenu);
+  imTrayFront.Caption := L10NFind('Menu.BringToFront', 'Bring to front');
+  imTrayFront.OnClick := imTrayFrontClick;
+  pMenu.Items.Insert(0, imTrayFront);
   // Profiles (sub-menu filled when the menu opens)
   imProfiles := TMenuItem.Create(pMenu);
   imProfiles.Caption := L10NFind('Menu.Profile', 'Profile');
@@ -1021,7 +1046,12 @@ begin
 
   // Taskbar icon mode: hide the bar once the form has been shown
   if IsTaskbarIcon
-  then PostMessage(Handle, LM_TASKBARMODE, 0, 0);
+  then PostMessage(Handle, LM_TASKBARMODE, 0, 0)
+  else if FTrayEnabled
+  then begin
+    FTray := TBarTrayIcon.Create(Handle, LM_TRAYICON);
+    FTray.Show(APP_NAME_LINKBAR + ' - ' + PanelName, Application.Icon.Handle);
+  end;
 end;
 
 procedure TLinkbarWcl.L10n;
@@ -1049,6 +1079,7 @@ begin
   if Assigned(FrmProperties)
   then FrmProperties.Free;
 
+  FreeAndNil(FTray);
   oAppBar.Free;
   StopDirWatch;
 
@@ -1547,6 +1578,74 @@ begin
   TSettingsFile.Write(FSettingsFileName, INI_AUTOCOLLAPSE, FCollapse.AutoSecs);
 end;
 
+procedure TLinkbarWcl.UpdateZOrderCaptions;
+begin
+  if StayOnTop
+  then imStayOnTop.Caption := L10NFind('Menu.StayOnTopOn', 'Do not keep always in front')
+  else imStayOnTop.Caption := L10NFind('Menu.StayOnTopOff', 'Keep always in front');
+  if FFullscreen.HideOnFullscreen
+  then imHideFullscreen.Caption := L10NFind('Menu.HideFullscreenOn', 'Do not hide with full screen apps')
+  else imHideFullscreen.Caption := L10NFind('Menu.HideFullscreenOff', 'Hide with full screen apps');
+end;
+
+procedure TLinkbarWcl.imStayOnTopClick(Sender: TObject);
+begin
+  StayOnTop := not StayOnTop;
+  TSettingsFile.Write(FSettingsFileName, INI_STAYONTOP, StayOnTop);
+  FFullscreen.EnsureOnTop;
+end;
+
+procedure TLinkbarWcl.imHideFullscreenClick(Sender: TObject);
+begin
+  FFullscreen.ChangeHide(not FFullscreen.HideOnFullscreen);
+  TSettingsFile.Write(FSettingsFileName, INI_HIDE_FULLSCREEN, FFullscreen.HideOnFullscreen);
+end;
+
+procedure TLinkbarWcl.imTrayFrontClick(Sender: TObject);
+begin
+  if Assigned(FAutoHider)
+  then FAutoHider.Show;
+  FFullscreen.BringToFront;
+end;
+
+procedure TLinkbarWcl.ShowTrayMenu;
+var
+  entries: TArray<TPopupEntry>;
+  entry: TPopupEntry;
+  menu: HMENU;
+  hbrBg: HBRUSH;
+  pt: TPoint;
+  trayItems: TArray<TMenuItem>;
+begin
+  UpdateZOrderCaptions;
+  entry.Checked := False;
+  trayItems := [imTrayFront, imStayOnTop, imHideFullscreen, imProperties, imClose];
+  for var item in trayItems
+  do begin
+    entry.Item := item;
+    entries := entries + [entry];
+  end;
+
+  menu := TSciFiMenu.Build(entries, hbrBg);
+  if (menu = 0)
+  then Exit;
+
+  GetCursorPos(pt);
+  // The menu closes when the user clicks elsewhere only if our window is in front
+  SetForegroundWindow(Handle);
+  FAutoHider.Locked := True;
+  try
+    const command = TrackPopupMenuEx(menu, TPM_RETURNCMD or TPM_RIGHTBUTTON or TPM_NONOTIFY, pt.X, pt.Y, Handle, nil);
+    DestroyMenu(menu);
+    PostMessage(Handle, WM_NULL, 0, 0);
+    if (command)
+    then PostMessage(Handle, LM_CM_ITEMS, 0, Integer(command));
+  finally
+    DeleteObject(hbrBg);
+    FAutoHider.Locked := False;
+  end;
+end;
+
 procedure TLinkbarWcl.SetCollapseOnFullscreen(AValue: Boolean);
 begin
   FCollapse.ChangeOnFullscreen(AValue);
@@ -1803,8 +1902,15 @@ begin
   then imAutoCollapse.Caption := L10NFind('Menu.AutoCollapseOn', 'Turn off automatic collapse')
   else imAutoCollapse.Caption := Format(L10NFind('Menu.AutoCollapseOff', 'Collapse automatically after %d s without use'), [AUTOCOLLAPSE_DEFAULT_SECS]);
 
+  UpdateZOrderCaptions;
+
   for var item: TMenuItem in pMenu.Items
   do begin
+    // "Bring to front" is only for the tray menu; the z-order options only for the bar menu
+    if (item = imTrayFront)
+       or (((item = imStayOnTop) or (item = imHideFullscreen)) and IsItemIndex(FItemPopup))
+    then Continue;
+
     if (AShift)
     then begin
       if item.Tag = 20 // Hide in extended menu
@@ -2344,10 +2450,23 @@ end;
 
 procedure TLinkbarWcl.WndProc(var Msg: TMessage);
 begin
+  // Explorer restarted: its notification area is empty again
+  if Assigned(FTray) and (Msg.Msg = FTray.TaskbarCreatedMsg) and FTray.Visible
+  then FTray.Show(APP_NAME_LINKBAR + ' - ' + PanelName, Application.Icon.Handle);
+
   case Msg.Msg of
     LM_TASKBARMODE:
       begin
         ApplyTaskbarMode;
+        Exit;
+      end;
+    LM_TRAYICON:
+      begin
+        case Msg.LParam of
+          WM_LBUTTONUP: imTrayFrontClick(nil);
+          WM_RBUTTONUP: ShowTrayMenu;
+        end;
+        Msg.Result := 0;
         Exit;
       end;
     //CUSTOM_ABN_FULLSCREENAPP:
@@ -2872,6 +2991,11 @@ end;
 function TLinkbarWcl.BarIsTaskbarIcon: Boolean;
 begin
   Result := IsTaskbarIcon;
+end;
+
+function TLinkbarWcl.BarStayOnTop: Boolean;
+begin
+  Result := FConfig.StayOnTop;
 end;
 
 function TLinkbarWcl.GetShowSysWidgets: Boolean;
